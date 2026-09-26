@@ -18,6 +18,9 @@ pub struct LabelArgs {
     pub multipv: u8,
     pub threads: usize,
     pub max_records: u64,
+    /// Skip analysis for records that already carry labels (n_targets >= 2);
+    /// they are written through unchanged. Enables free 1M -> 5M continuation.
+    pub resume: bool,
     pub hash_mb: u32,
 }
 
@@ -224,6 +227,9 @@ pub fn run(args: &LabelArgs) -> Result<(), String> {
                 let i = next.fetch_add(1, Ordering::Relaxed);
                 if i as usize >= records.len() {
                     break;
+                }
+                if args.resume && records[i as usize].n_targets >= 2 {
+                    continue; // already labeled by a previous pass
                 }
                 // Thread-local engine is created lazily inside the closure
                 // via thread_local! below.

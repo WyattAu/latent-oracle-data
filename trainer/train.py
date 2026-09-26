@@ -57,10 +57,9 @@ def encode_batch(samples, device):
     return codes, side
 
 
-def build_batch(shard_path: str, batch: int, device, require_targets: bool, max_wdl=False):
+def build_batch(shard_path: str, batch: int, device, require_targets: bool):
     """Pull one batch worth of samples with their masks (slow path: python-chess)."""
-    import chess
-    samples, masks, tlists, tidx = [], [], [], []
+    samples, masks, tidx, evals, labeled = [], [], [], [], []
     stream = iter_records(shard_path)
     while len(samples) < batch:
         s = next(stream, None)
@@ -77,10 +76,15 @@ def build_batch(shard_path: str, batch: int, device, require_targets: bool, max_
         samples.append(s)
         masks.append(mask)
         tidx.append(tflat)
+        evals.append(s.eval_cp)
+        labeled.append(len(s.targets) >= 2)  # SF-labeled records carry eval
     codes, side = encode_batch(samples, device)
     mask_t = torch.from_numpy(np.stack(masks)).to(device)
     tgt = torch.tensor(tidx, dtype=torch.long, device=device)
-    return samples, codes, side, mask_t, tgt
+    res_t = torch.from_numpy(np.stack([s.wdl for s in samples]).astype(np.float32)).to(device)
+    return codes, side, mask_t, tgt, \
+        torch.tensor(evals, dtype=torch.float32, device=device), \
+        torch.tensor(labeled, dtype=torch.bool, device=device), res_t
 
 
 def main():
@@ -116,21 +120,31 @@ def main():
             batch = build_batch(args.shard, args.batch, device, require_targets=True)
             if batch is None:
                 break
-            samples, codes, side, mask, tgt = batch
+            codes, side, mask, tgt, evals, labeled, res_t = batch
             with torch.autocast("cuda", dtype=torch.float16, enabled=device == "cuda"):
                 scores, promo, wdl = model(codes, side)
                 flat = scores.reshape(codes.shape[0], 64 * 64)
                 flat = flat.masked_fill(~mask.reshape(codes.shape[0], -1), float("-inf"))
                 pl = F.cross_entropy(flat, tgt)
-                wdl_t = torch.tensor(np.stack([s.wdl for s in samples]), device=device)
-                vl = F.cross_entropy(wdl.float(), wdl_t.argmax(dim=1))
+                # Value target: game results for BC records; for SF-labeled
+                # records, a soft WDL distribution from eval_cp via the
+                # classic logistic model (k = 0.00368208), which carries the
+                # teacher's judgment instead of noisy single-game outcomes.
+                k = 0.00368208
+                pw = torch.sigmoid(k * evals)
+                pd_ = torch.clamp(1.0 - pw - torch.sigmoid(-k * evals), min=0.0)
+                pl_loss = torch.sigmoid(-k * evals)
+                soft = torch.stack([pw, pd_, pl_loss], dim=1)
+                soft = soft / soft.sum(dim=1, keepdim=True)
+                soft_t = torch.where(labeled.unsqueeze(1), soft, res_t)
+                vl = F.cross_entropy(wdl.float(), soft_t)
                 loss = pl + 0.5 * vl
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             scaler.step(opt)
             scaler.update()
             step += 1
-            done += len(samples)
+            done += int(tgt.numel())
             if step % 25 == 0:
                 print(f"epoch {epoch} step {step}: policy {pl.item():.4f} value {vl.item():.4f} "
                       f"({done} positions this epoch)", flush=True)

@@ -29,6 +29,7 @@ fn main() {
             multipv: opt(&kv, "--multipv", 3) as u8,
             threads: opt(&kv, "--threads", 6) as usize,
             max_records: opt(&kv, "--max-records", 5_000_000),
+            resume: kv.contains_key("--resume"),
             hash_mb: opt(&kv, "--hash", 64) as u32,
         }),
         "info" => {
