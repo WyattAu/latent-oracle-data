@@ -1,0 +1,14 @@
+[package]
+name = "lo-data"
+version = "0.1.0"
+edition = "2021"
+description = "Data pipeline for latent-oracle: Lichess PGN -> binary shards -> Stockfish labels"
+license = "Apache-2.0"
+
+[dependencies]
+shakmaty = "0.27"
+zstd = "0.14"
+
+[profile.release]
+lto = true
+codegen-units = 1
