@@ -57,10 +57,13 @@ def encode_batch(samples, device):
     return codes, side
 
 
-def build_batch(shard_path: str, batch: int, device, require_targets: bool):
-    """Pull one batch worth of samples with their masks (slow path: python-chess)."""
+def build_batch(stream, batch: int, device, require_targets: bool):
+    """Pull one batch worth of samples with their masks (slow path: python-chess).
+
+    `stream` is a persistent iterator owned by the caller so successive calls
+    advance through the shard (a fresh iterator per call would replay the
+    first batch forever)."""
     samples, masks, tidx, evals, labeled = [], [], [], [], []
-    stream = iter_records(shard_path)
     while len(samples) < batch:
         s = next(stream, None)
         if s is None:
@@ -115,9 +118,10 @@ def main():
 
     step = 0
     for epoch in range(args.epochs):
+        stream = iter_records(args.shard)
         done = 0
         while True:
-            batch = build_batch(args.shard, args.batch, device, require_targets=True)
+            batch = build_batch(stream, args.batch, device, require_targets=True)
             if batch is None:
                 break
             codes, side, mask, tgt, evals, labeled, res_t = batch
