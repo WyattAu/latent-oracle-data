@@ -1,6 +1,7 @@
 //! latent-oracle-data library: shard format, PGN pipeline, SF labeling.
 
 pub mod label;
+pub mod openings;
 pub mod pgn;
 pub mod chess_glue;
 pub mod shard;
