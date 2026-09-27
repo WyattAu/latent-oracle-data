@@ -97,3 +97,32 @@ def move_to_uci(t: tuple[int, int, int]) -> str:
     if t[2] != 255:
         s += PROMO_TO_UCI.get(t[2], "")
     return s
+
+
+class MaskSidecar:
+    """mmap reader for legal-move sidecars ("LOMS" v1, see src/masks.rs).
+
+    mask_indices(i) -> np.ndarray of flat legal indices (from*64+to) for
+    record i. Training uses these to build the CE mask without python-chess.
+    """
+
+    def __init__(self, path: str):
+        import mmap
+        self._f = open(path, "rb")
+        self._mm = mmap.mmap(self._f.fileno(), 0, access=mmap.ACCESS_READ)
+        magic, version, _res, count = struct.unpack("<IHHQ", self._mm[:16])
+        if magic != 0x534D4F4C or version != 1:
+            raise ValueError(f"bad mask sidecar {path}")
+        self.count = count
+        self.offsets = np.frombuffer(self._mm, dtype="<u8", count=count + 1, offset=16)
+        # payload begins after the header and the (count+1)-entry offset table
+        self._base = 16 + (count + 1) * 8
+
+    def mask_indices(self, i: int) -> np.ndarray:
+        a, b = int(self.offsets[i]), int(self.offsets[i + 1])
+        return np.frombuffer(self._mm, dtype="<u2", count=(b - a - 1) // 2,
+                             offset=self._base + a + 1)  # +1 skips the n_moves byte
+
+    def close(self):
+        self._mm.close()
+        self._f.close()

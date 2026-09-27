@@ -1,4 +1,4 @@
-use lo_data::{label, openings, worker};
+use lo_data::{label, masks, openings, worker};
 use std::collections::HashMap;
 
 fn main() {
@@ -31,6 +31,10 @@ fn main() {
             max_records: opt(&kv, "--max-records", 5_000_000),
             resume: kv.contains_key("--resume"),
             hash_mb: opt(&kv, "--hash", 64) as u32,
+        }),
+        "masks" => masks::run(&masks::MasksArgs {
+            input: req(&kv, "--in"),
+            output: req(&kv, "--out"),
         }),
         "openings" => openings::run(&openings::OpeningsArgs {
             input: req(&kv, "--in"),
@@ -110,6 +114,7 @@ fn usage() -> ! {
          [--max-ply 120] [--sample 1] [--max-positions N] [--min-tc 120] [--max-tc 3600]\n  \
          lo-data label --in <in.shard> --out <out.shard> [--sf stockfish] [--depth 16] \
          [--multipv 3] [--threads 6] [--max-records N] [--hash 64]\n  \
+         lo-data masks --in <file.shard> --out <file.mask>\n  \
          lo-data openings --in <file.shard> --out <file.epd> [--count 2000]\n  \
          lo-data info --in <file.shard>"
     );

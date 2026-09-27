@@ -19,7 +19,7 @@ import torch
 import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from format import iter_records, count_records, move_to_uci  # noqa: E402
+from format import iter_records, count_records, move_to_uci, MaskSidecar  # noqa: E402
 from model import ChessNet  # noqa: E402
 
 PIECE_TO_PC = {1: ("P", 0), 2: ("N", 0), 3: ("B", 0), 4: ("R", 0), 5: ("Q", 0), 6: ("K", 0),
@@ -57,18 +57,35 @@ def encode_batch(samples, device):
     return codes, side
 
 
-def build_batch(stream, batch: int, device, require_targets: bool):
-    """Pull one batch worth of samples with their masks (slow path: python-chess).
+def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: MaskSidecar | None = None):
+    """Pull one batch worth of samples with their masks.
 
-    `stream` is a persistent iterator owned by the caller so successive calls
-    advance through the shard (a fresh iterator per call would replay the
-    first batch forever)."""
+    With a MaskSidecar the mask comes from precomputed legal-move indices
+    (fast path); otherwise python-chess computes it per sample (slow path)."""
     samples, masks, tidx, evals, labeled = [], [], [], [], []
     while len(samples) < batch:
-        s = next(stream, None)
-        if s is None:
+        item = next(stream, None)
+        if item is None:
             return None
+        idx_s, s = item
         if require_targets and not s.targets:
+            continue
+        if mask_sc is not None and idx_s >= mask_sc.count:
+            return None
+        if mask_sc is not None:
+            flat = mask_sc.mask_indices(idx_s)
+            if len(flat) == 0:
+                continue  # terminal position
+            mask = np.zeros((64, 64), dtype=np.bool_)
+            mask[flat >> 6, flat & 63] = True
+            tflat = int(s.targets[0][0]) * 64 + int(s.targets[0][1])
+            if not mask.reshape(-1)[tflat]:
+                continue  # target not legal: corrupt record
+            samples.append(s)
+            masks.append(mask)
+            tidx.append(tflat)
+            evals.append(s.eval_cp)
+            labeled.append(len(s.targets) >= 2)
             continue
         board = codes_to_board(s.board_codes, s.side)
         if board.is_game_over():
@@ -90,6 +107,33 @@ def build_batch(stream, batch: int, device, require_targets: bool):
         torch.tensor(labeled, dtype=torch.bool, device=device), res_t
 
 
+def ensure_mask(args) -> MaskSidecar | None:
+    """Auto-generate a legal-move sidecar via the lo-data binary when absent.
+
+    Generation takes minutes and makes training GPU-bound instead of
+    python-chess-bound (the fallback stays available via --no-mask-auto)."""
+    if args.no_mask_auto:
+        return None
+    import subprocess
+    mask_path = args.shard + ".mask"
+    total = count_records(args.shard)
+    if os.path.exists(mask_path) and count_records(mask_path) >= total:
+        print(f"mask sidecar: {mask_path} ({count_records(mask_path)} records)", flush=True)
+        return MaskSidecar(mask_path)
+    bin_ = os.environ.get("LO_LODATA_BIN", "/home/wyatt/tools/chess/lo-data")
+    if not os.path.exists(bin_):
+        print("mask sidecar: lo-data binary not found — python-chess fallback", flush=True)
+        return None
+    print(f"mask sidecar: generating {mask_path} for {total} records...", flush=True)
+    r = subprocess.run([bin_, "masks", "--in", args.shard, "--out", mask_path],
+                       capture_output=True, text=True)
+    if r.returncode != 0 or not os.path.exists(mask_path) or count_records(mask_path) < total:
+        print("mask sidecar: generation failed — python-chess fallback", flush=True)
+        return None
+    print("mask sidecar: ready", flush=True)
+    return MaskSidecar(mask_path)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shard", required=True)
@@ -104,6 +148,7 @@ def main():
     ap.add_argument("--batch", type=int, default=512)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--wd", type=float, default=0.01)
+    ap.add_argument("--no-mask-auto", action="store_true")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -117,11 +162,12 @@ def main():
     scaler = torch.amp.GradScaler("cuda")
 
     step = 0
+    mask_sc = ensure_mask(args)
     for epoch in range(args.epochs):
-        stream = iter_records(args.shard)
+        stream = enumerate(iter_records(args.shard))
         done = 0
         while True:
-            batch = build_batch(stream, args.batch, device, require_targets=True)
+            batch = build_batch(stream, args.batch, device, require_targets=True, mask_sc=mask_sc)
             if batch is None:
                 break
             codes, side, mask, tgt, evals, labeled, res_t = batch
