@@ -9,6 +9,7 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::Instant;
 
 pub struct LabelArgs {
     pub input: String,
@@ -218,8 +219,11 @@ pub fn run(args: &LabelArgs) -> Result<(), String> {
     eprintln!("label: {} records loaded", records.len());
 
     let next = AtomicU64::new(0);
+    let done = AtomicU64::new(0);
+    let started = Instant::now();
     let merged: Mutex<HashMap<u64, Patch>> = Mutex::new(HashMap::new());
     let failures = AtomicU64::new(0);
+    let target = (args.max_records as u64).min(records.len() as u64);
 
     std::thread::scope(|scope| {
         for _ in 0..args.threads {
@@ -230,6 +234,16 @@ pub fn run(args: &LabelArgs) -> Result<(), String> {
                 }
                 if args.resume && records[i as usize].n_targets >= 2 {
                     continue; // already labeled by a previous pass
+                }
+                let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+                if d % 50_000 == 0 {
+                    let secs = started.elapsed().as_secs().max(1);
+                    let rate = d / secs;
+                    let eta_min = (target - d).saturating_mul(1) / rate.max(1) / 60;
+                    eprintln!(
+                        "label: {d}/{target} done, {} pos/s, ETA ~{eta_min} min",
+                        d / secs
+                    );
                 }
                 // Thread-local engine is created lazily inside the closure
                 // via thread_local! below.
