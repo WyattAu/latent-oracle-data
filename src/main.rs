@@ -20,6 +20,7 @@ fn main() {
             max_positions: opt(&kv, "--max-positions", 20_000_000),
             min_tc: opt(&kv, "--min-tc", 120),
             max_tc: opt(&kv, "--max-tc", 3600),
+            no_elo_filter: kv.contains_key("--no-elo-filter"),
         }),
         "label" => label::run(&label::LabelArgs {
             input: req(&kv, "--in"),

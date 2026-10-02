@@ -19,6 +19,7 @@ pub struct ShardArgs {
     pub max_positions: u64,
     pub min_tc: i64,
     pub max_tc: i64,
+    pub no_elo_filter: bool,
 }
 
 fn open_reader(path: &str) -> Box<dyn BufRead> {
@@ -58,13 +59,15 @@ pub fn run(args: &ShardArgs) -> Result<(), String> {
         let Some(game) = game else { break };
         games += 1;
 
-        let white_elo = game.headers.get("WhiteElo").and_then(|v| v.parse::<i64>().ok());
-        let black_elo = game.headers.get("BlackElo").and_then(|v| v.parse::<i64>().ok());
-        let (Some(we), Some(be)) = (white_elo, black_elo) else {
-            continue;
-        };
-        if we < args.min_elo || be < args.min_elo {
-            continue;
+        if !args.no_elo_filter {
+            let white_elo = game.headers.get("WhiteElo").and_then(|v| v.parse::<i64>().ok());
+            let black_elo = game.headers.get("BlackElo").and_then(|v| v.parse::<i64>().ok());
+            let (Some(we), Some(be)) = (white_elo, black_elo) else {
+                continue;
+            };
+            if we < args.min_elo || be < args.min_elo {
+                continue;
+            }
         }
         if let Some(tc) = game.headers.get("TimeControl") {
             let bt = base_time(tc);
