@@ -57,7 +57,7 @@ def encode_batch(samples, device):
     return codes, side
 
 
-def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: MaskSidecar | None = None):
+def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: MaskSidecar | None = None, quality_filter: bool = False):
     """Pull one batch worth of samples with their masks.
 
     With a MaskSidecar the mask comes from precomputed legal-move indices
@@ -72,6 +72,8 @@ def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: Mask
             continue
         if mask_sc is not None and idx_s >= mask_sc.count:
             return None
+        if quality_filter and len(s.targets) >= 2 and abs(s.eval_cp) > 300:
+            continue
         if mask_sc is not None:
             flat = mask_sc.mask_indices(idx_s)
             if len(flat) == 0:
@@ -153,6 +155,8 @@ def main():
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--wd", type=float, default=0.01)
     ap.add_argument("--no-mask-auto", action="store_true")
+    ap.add_argument("--quality-filter", action="store_true",
+                    help="Skip records where played move loses >300cp vs SF best")
     ap.add_argument("--init-from", default="", help="Load pre-trained .pt checkpoint for fine-tuning")
     ap.add_argument("--lr-ft", type=float, default=1e-4, help="Fine-tuning learning rate")
     args = ap.parse_args()
@@ -177,7 +181,7 @@ def main():
         stream = enumerate(iter_records(args.shard))
         done = 0
         while True:
-            batch = build_batch(stream, args.batch, device, require_targets=True, mask_sc=mask_sc)
+            batch = build_batch(stream, args.batch, device, require_targets=True, mask_sc=mask_sc, quality_filter=args.quality_filter)
             if batch is None:
                 break
             codes, side, mask, tgt, evals, labeled, res_t = batch
