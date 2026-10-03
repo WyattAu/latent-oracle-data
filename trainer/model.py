@@ -55,6 +55,9 @@ def gab_bucket_table() -> torch.Tensor:
 
 _GAB_BUCKETS_CONST = None  # lazily built, registered as non-persistent buffer
 
+# File-mirror lookup: square a1(=0) -> h1(=7); sq ^ 7 flips the file bits.
+MIRROR_IDX = torch.tensor([sq ^ 7 for sq in range(64)], dtype=torch.long)
+
 
 class Block(nn.Module):
     def __init__(self, d: int, heads: int, dff: int):
@@ -117,6 +120,21 @@ class ChessNet(nn.Module):
             return None
         # (H, T, T): per-head lookup of bucket bias
         return self.gab_table[:, self.gab_buckets]  # (H, 64, 64)
+
+    # ------------------------------------------------------------ utilities
+    @staticmethod
+    def mirror_batch(codes: torch.Tensor, side: torch.Tensor, mask: torch.Tensor | None,
+                     tgt: torch.Tensor | None):
+        """File-mirror augmentation (a<->h). Lc0-style: the only legal chess
+        symmetry without a color swap. Mirrors board, move indices, and mask.
+        GAB buckets are invariant under file mirror, so no bias change."""
+        codes = codes.view(-1, 64)[:, MIRROR_IDX]
+        if mask is not None:
+            mask = mask[:, MIRROR_IDX, :][:, :, MIRROR_IDX]
+        if tgt is not None:
+            u, v = tgt // 64, tgt % 64
+            tgt = MIRROR_IDX[u] * 64 + MIRROR_IDX[v]
+        return codes, side, mask, tgt
 
     def forward(self, codes: torch.Tensor, side: torch.Tensor):
         """codes (B,64) u8, side (B,) u8 ->

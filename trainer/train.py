@@ -172,6 +172,12 @@ def main():
                          "embeddings/heads (Muonorger paper recipe). lr applies to AdamW "
                          "params; Muon lr = lr*66 approx via --muon-lr override.")
     ap.add_argument("--muon-lr", type=float, default=0.02, help="Muon learning rate")
+    ap.add_argument("--ema-decay", type=float, default=0.999,
+                    help="EMA shadow-weights decay (0 = off). Exports net_eN_ema.bin; "
+                         "Lc0-style: EMA net is usually the stronger player.")
+    ap.add_argument("--mirror", action="store_true",
+                    help="File-mirror augmentation (a<->h), prob 0.5 per batch: the only "
+                         "legal chess symmetry without a color swap. Free 2x data.")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -211,12 +217,16 @@ def main():
     print(f"params: {sum(p.numel() for p in model.parameters())/1e6:.1f}M on {device} "
           f"optimizer={args.optimizer}{' gab' if args.gab else ''}", flush=True)
 
+    ema_params = ([p.detach().clone() for p in model.parameters()]
+                  if args.ema_decay > 0 else None)
+
     total = count_records(args.shard)
     os.makedirs(args.out, exist_ok=True)
     scaler = torch.amp.GradScaler("cuda")
 
     step = 0
     mask_sc = ensure_mask(args)
+    match_ema = None
     for epoch in range(args.epochs):
         stream = enumerate(iter_records(args.shard))
         done = 0
@@ -225,11 +235,20 @@ def main():
             if batch is None:
                 break
             codes, side, mask, tgt, evals, labeled, res_t = batch
+            if args.mirror and torch.rand(1).item() < 0.5:
+                from model import MIRROR_IDX
+                codes = codes.view(-1, 64)[:, MIRROR_IDX.to(codes.device)]
+                mask = mask[:, MIRROR_IDX.to(mask.device), :][:, :, MIRROR_IDX.to(mask.device)]
+                u, v = tgt // 64, tgt % 64
+                tgt = MIRROR_IDX.to(tgt.device)[u] * 64 + MIRROR_IDX.to(tgt.device)[v]
             with torch.autocast("cuda", dtype=torch.float16, enabled=device == "cuda"):
                 scores, promo, wdl = model(codes, side)
                 flat = scores.reshape(codes.shape[0], 64 * 64)
                 flat = flat.masked_fill(~mask.reshape(codes.shape[0], -1), float("-inf"))
                 pl_raw = F.cross_entropy(flat, tgt, reduction="none")
+                with torch.no_grad():
+                    batch_match = (flat.argmax(1) == tgt).float().mean().item()
+                match_ema = batch_match if match_ema is None else 0.98 * match_ema + 0.02 * batch_match
                 if args.decisive_weighting:
                     # Lc0-style: weight policy loss by position decisiveness.
                     # Equal positions (|eval| < 150cp) contribute proportionally
@@ -259,11 +278,16 @@ def main():
             scaler.scale(loss).backward()
             scaler.step(opt)
             scaler.update()
+            if ema_params is not None:
+                with torch.no_grad():
+                    d = args.ema_decay
+                    for e, p in zip(ema_params, model.parameters()):
+                        e.mul_(d).add_(p.detach(), alpha=1.0 - d)
             step += 1
             done += int(tgt.numel())
             if step % 25 == 0:
                 print(f"epoch {epoch} step {step}: policy {pl.item():.4f} value {vl.item():.4f} "
-                      f"({done} positions this epoch)", flush=True)
+                      f"match {match_ema:.3f} ({done} positions this epoch)", flush=True)
             if args.steps and step % max(1, args.steps) == 0:
                 break
             if done >= total:
@@ -271,6 +295,15 @@ def main():
         model.export_blob(os.path.join(args.out, f"net_e{epoch}.bin"))
         torch.save(model.state_dict(), os.path.join(args.out, f"net_e{epoch}.pt"))
         print(f"epoch {epoch}: exported {args.out}/net_e{epoch}.bin", flush=True)
+        # EMA export: swap in shadow weights, export, restore raw weights.
+        if ema_params is not None:
+            raw_sd = {k: v.detach().clone() for k, v in model.state_dict().items()}
+            ema_sd = {k: e.clone() for k, e in zip(raw_sd.keys(), ema_params)}
+            model.load_state_dict(ema_sd)
+            model.export_blob(os.path.join(args.out, f"net_e{epoch}_ema.bin"))
+            torch.save(ema_sd, os.path.join(args.out, f"net_e{epoch}_ema.pt"))
+            model.load_state_dict(raw_sd)
+            print(f"epoch {epoch}: exported {args.out}/net_e{epoch}_ema.bin", flush=True)
 
 
 if __name__ == "__main__":
