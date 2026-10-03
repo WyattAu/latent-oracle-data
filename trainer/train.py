@@ -117,9 +117,13 @@ def ensure_mask(args) -> MaskSidecar | None:
     import subprocess
     mask_path = args.shard + ".mask"
     total = count_records(args.shard)
-    if os.path.exists(mask_path) and count_records(mask_path) >= total:
-        print(f"mask sidecar: {mask_path} ({count_records(mask_path)} records)", flush=True)
-        return MaskSidecar(mask_path)
+    if os.path.exists(mask_path) and os.path.getsize(mask_path) > 1000:
+        sc = MaskSidecar(mask_path)
+        if sc.count >= total:
+            print(f"mask sidecar: {mask_path} ({sc.count} records)", flush=True)
+            return sc
+        sc.close()
+        print(f"mask sidecar: {mask_path} only covers {sc.count}/{total} — regenerating", flush=True)
     bin_ = os.environ.get("LO_LODATA_BIN", "/home/wyatt/tools/chess/lo-data")
     if not os.path.exists(bin_):
         print("mask sidecar: lo-data binary not found — python-chess fallback", flush=True)
@@ -149,12 +153,18 @@ def main():
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--wd", type=float, default=0.01)
     ap.add_argument("--no-mask-auto", action="store_true")
+    ap.add_argument("--init-from", default="", help="Load pre-trained .pt checkpoint for fine-tuning")
+    ap.add_argument("--lr-ft", type=float, default=1e-4, help="Fine-tuning learning rate")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(0)
     model = ChessNet(args.d, args.layers, args.heads, args.dff, args.dpol).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
+    if args.init_from and os.path.exists(args.init_from):
+        model.load_state_dict(torch.load(args.init_from, map_location="cpu", weights_only=True))
+        print(f"loaded pre-trained weights from {args.init_from}", flush=True)
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr_ft if args.init_from else args.lr,
+                            weight_decay=args.wd)
     print(f"params: {sum(p.numel() for p in model.parameters())/1e6:.1f}M on {device}", flush=True)
 
     total = count_records(args.shard)
