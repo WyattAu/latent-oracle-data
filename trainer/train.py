@@ -163,17 +163,53 @@ def main():
                          "in equal positions); full weight at |eval| >= 150cp")
     ap.add_argument("--init-from", default="", help="Load pre-trained .pt checkpoint for fine-tuning")
     ap.add_argument("--lr-ft", type=float, default=1e-4, help="Fine-tuning learning rate")
+    ap.add_argument("--gab", action="store_true",
+                    help="Geometric Attention Bias (Chessformer GAB-lite): learned per-head "
+                         "bias over square-relation buckets. Zero-init = v1 model exactly, "
+                         "so --init-from v1 checkpoints warm-start losslessly. Exports blob v2.")
+    ap.add_argument("--optimizer", choices=["adamw", "muon"], default="adamw",
+                    help="muon: orthogonalized momentum on 2-D hidden weights + AdamW on "
+                         "embeddings/heads (Muonorger paper recipe). lr applies to AdamW "
+                         "params; Muon lr = lr*66 approx via --muon-lr override.")
+    ap.add_argument("--muon-lr", type=float, default=0.02, help="Muon learning rate")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(0)
-    model = ChessNet(args.d, args.layers, args.heads, args.dff, args.dpol).to(device)
+    model = ChessNet(args.d, args.layers, args.heads, args.dff, args.dpol, gab=args.gab).to(device)
     if args.init_from and os.path.exists(args.init_from):
-        model.load_state_dict(torch.load(args.init_from, map_location="cpu", weights_only=True))
-        print(f"loaded pre-trained weights from {args.init_from}", flush=True)
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr_ft if args.init_from else args.lr,
-                            weight_decay=args.wd)
-    print(f"params: {sum(p.numel() for p in model.parameters())/1e6:.1f}M on {device}", flush=True)
+        sd = torch.load(args.init_from, map_location="cpu", weights_only=True)
+        missing = model.load_state_dict(sd, strict=False)
+        if args.gab and all("gab_table" in k for k in missing.unexpected_keys) and not missing.missing_keys:
+            print(f"loaded pre-trained weights from {args.init_from} (GAB table zero-init)", flush=True)
+        elif not missing.missing_keys and not missing.unexpected_keys:
+            print(f"loaded pre-trained weights from {args.init_from}", flush=True)
+        else:
+            print(f"loaded pre-trained weights from {args.init_from} "
+                  f"(missing={len(missing.missing_keys)} unexpected={len(missing.unexpected_keys)})", flush=True)
+    from muon import Muon, split_params_for_muon
+    lr = args.lr_ft if args.init_from else args.lr
+    if args.optimizer == "muon":
+        muon_p, adamw_p = split_params_for_muon(model)
+        adamw_opt = torch.optim.AdamW(adamw_p, lr=lr, weight_decay=args.wd) if adamw_p else None
+        muon_opt = Muon(muon_p, lr=args.muon_lr) if muon_p else None
+
+        class _JointOpt:
+            def __init__(self, a, b):
+                self.a, self.b = a, b
+                self.param_groups = (a.param_groups if a else []) + \
+                                    (b.param_groups if b else [])
+            def zero_grad(self, set_to_none=True):
+                for o in (self.a, self.b):
+                    if o: o.zero_grad(set_to_none=set_to_none)
+            def step(self):
+                if self.b: self.b.step()
+                if self.a: self.a.step()
+        opt = _JointOpt(adamw_opt, muon_opt)
+    else:
+        opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=args.wd)
+    print(f"params: {sum(p.numel() for p in model.parameters())/1e6:.1f}M on {device} "
+          f"optimizer={args.optimizer}{' gab' if args.gab else ''}", flush=True)
 
     total = count_records(args.shard)
     os.makedirs(args.out, exist_ok=True)
