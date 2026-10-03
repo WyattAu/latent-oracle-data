@@ -157,6 +157,10 @@ def main():
     ap.add_argument("--no-mask-auto", action="store_true")
     ap.add_argument("--quality-filter", action="store_true",
                     help="Skip records where played move loses >300cp vs SF best")
+    ap.add_argument("--decisive-weighting", action="store_true",
+                    help="Lc0-style policy weighting: labeled positions with small |eval| "
+                         "get reduced policy loss weight (best move is near-arbitrary "
+                         "in equal positions); full weight at |eval| >= 150cp")
     ap.add_argument("--init-from", default="", help="Load pre-trained .pt checkpoint for fine-tuning")
     ap.add_argument("--lr-ft", type=float, default=1e-4, help="Fine-tuning learning rate")
     args = ap.parse_args()
@@ -189,7 +193,19 @@ def main():
                 scores, promo, wdl = model(codes, side)
                 flat = scores.reshape(codes.shape[0], 64 * 64)
                 flat = flat.masked_fill(~mask.reshape(codes.shape[0], -1), float("-inf"))
-                pl = F.cross_entropy(flat, tgt)
+                pl_raw = F.cross_entropy(flat, tgt, reduction="none")
+                if args.decisive_weighting:
+                    # Lc0-style: weight policy loss by position decisiveness.
+                    # Equal positions (|eval| < 150cp) contribute proportionally
+                    # less; BC records keep full weight.
+                    pw_weight = torch.where(
+                        labeled,
+                        torch.clamp(evals.abs() / 150.0, max=1.0),
+                        torch.ones_like(evals),
+                    )
+                    pl = (pl_raw * pw_weight).sum() / pw_weight.sum().clamp(min=1.0)
+                else:
+                    pl = pl_raw.mean()
                 # Value target: game results for BC records; for SF-labeled
                 # records, a soft WDL distribution from eval_cp via the
                 # classic logistic model (k = 0.00368208), which carries the
