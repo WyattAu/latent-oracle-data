@@ -261,13 +261,25 @@ class ChessNet(nn.Module):
                    blk.ln2.weight, blk.ln2.bias,
                    blk.W1.weight.flatten(), blk.W1.bias,
                    blk.W2.weight.flatten(), blk.W2.bias]
-        ts += [self.lnP.weight, self.lnP.bias,
-               self.Wfrom.weight.flatten(), self.Wfrom.bias,
-               self.Wto.weight.flatten(), self.Wto.bias,
-               self.promo.weight.flatten(), self.promo.bias,
-               self.lnV.weight, self.lnV.bias,
-               self.V1.weight.flatten(), self.V1.bias,
-               self.V2.weight.flatten(), self.V2.bias]
+        # v1-layout V2 slot: for v3 this stays v1-SHAPED (bucket 0) so every
+        # later offset (gab table, v3 tail) lands where the C++ reader
+        # expects. The full bucketed head is emitted in the v3 tail below.
+        if self.v3:
+            ts += [self.lnP.weight, self.lnP.bias,
+                   self.Wfrom.weight.flatten(), self.Wfrom.bias,
+                   self.Wto.weight.flatten(), self.Wto.bias,
+                   self.promo.weight.flatten(), self.promo.bias,
+                   self.lnV.weight, self.lnV.bias,
+                   self.V1.weight.flatten(), self.V1.bias,
+                   self.V2.weight.view(8, 3, 128)[0].flatten(), self.V2.bias.view(8, 3)[0]]
+        else:
+            ts += [self.lnP.weight, self.lnP.bias,
+                   self.Wfrom.weight.flatten(), self.Wfrom.bias,
+                   self.Wto.weight.flatten(), self.Wto.bias,
+                   self.promo.weight.flatten(), self.promo.bias,
+                   self.lnV.weight, self.lnV.bias,
+                   self.V1.weight.flatten(), self.V1.bias,
+                   self.V2.weight.flatten(), self.V2.bias]
         if self.gab:
             ts += [self.gab_table.flatten()]
         if self.v3:
