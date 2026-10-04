@@ -42,6 +42,8 @@ class Sample:
     targets: list            # [(from, to, promo)] trimmed to n_targets
     eval_cp: int
     wdl: np.ndarray          # (3,) float32, white POV
+    castling: int = 0        # rights bitmask (shard convention)
+    ep: int = 255            # ep square, 255 = none
 
 
 def read_header(path: str) -> tuple[int, int]:
@@ -80,6 +82,8 @@ def iter_records(path: str):
                     targets=targets,
                     eval_cp=int(rec["eval_cp"]),
                     wdl=rec["wdl"].astype(np.float32),
+                    castling=int(rec["castling"]),
+                    ep=int(rec["ep"]),
                 )
 
 
