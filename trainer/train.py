@@ -57,12 +57,18 @@ def encode_batch(samples, device):
     return codes, side
 
 
-def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: MaskSidecar | None = None, quality_filter: bool = False):
+def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: MaskSidecar | None = None,
+                quality_filter: bool = False, tb_labels: dict | None = None):
     """Pull one batch worth of samples with their masks.
 
     With a MaskSidecar the mask comes from precomputed legal-move indices
-    (fast path); otherwise python-chess computes it per sample (slow path)."""
+    (fast path); otherwise python-chess computes it per sample (slow path).
+    With tb_labels (record idx -> (wdl -2..2, best_flat_idx), from
+    make_tb_labels.py) covered records get exact Syzygy targets: the policy
+    target becomes the DTZ-optimal move and the value target the exact WDL,
+    both at full policy weight (RESEARCH-ENDGAME-RL E1)."""
     samples, masks, tidx, evals, labeled = [], [], [], [], []
+    pol_w, tb_exact, tb_vt = [], [], []
     while len(samples) < batch:
         item = next(stream, None)
         if item is None:
@@ -74,6 +80,19 @@ def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: Mask
             return None
         if quality_filter and len(s.targets) >= 2 and abs(s.eval_cp) > 300:
             continue
+        is_tb = tb_labels is not None and idx_s in tb_labels
+        if is_tb:
+            wdl, best_flat = tb_labels[idx_s]
+            if wdl == 2:   vt = (1.0, 0.0, 0.0)
+            elif wdl == 1: vt = (0.75, 0.25, 0.0)
+            elif wdl == 0: vt = (0.0, 1.0, 0.0)
+            elif wdl == -1: vt = (0.0, 0.25, 0.75)
+            else:          vt = (0.0, 0.0, 1.0)
+            pw = 1.0  # exact label: full weight
+        else:
+            vt = None
+            pw = 1.0
+
         if mask_sc is not None:
             flat = mask_sc.mask_indices(idx_s)
             if len(flat) == 0:
@@ -83,30 +102,38 @@ def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: Mask
             tflat = int(s.targets[0][0]) * 64 + int(s.targets[0][1])
             if not mask.reshape(-1)[tflat]:
                 continue  # target not legal: corrupt record
-            samples.append(s)
-            masks.append(mask)
-            tidx.append(tflat)
-            evals.append(s.eval_cp)
-            labeled.append(len(s.targets) >= 2)
-            continue
-        board = codes_to_board(s.board_codes, s.side)
-        if board.is_game_over():
-            continue
-        mask, tflat = legal_mask_and_index(board, s.targets)
-        if tflat < 0:
-            continue
+            if is_tb and mask.reshape(-1)[best_flat]:
+                tflat = best_flat  # DTZ-optimal policy target
+        else:
+            board = codes_to_board(s.board_codes, s.side)
+            if board.is_game_over():
+                continue
+            mask, tflat = legal_mask_and_index(board, s.targets)
+            if tflat < 0:
+                continue
+            if is_tb and mask.reshape(-1)[best_flat]:
+                tflat = best_flat
+
         samples.append(s)
         masks.append(mask)
         tidx.append(tflat)
         evals.append(s.eval_cp)
-        labeled.append(len(s.targets) >= 2)  # SF-labeled records carry eval
+        labeled.append(len(s.targets) >= 2)
+        pol_w.append(pw)
+        tb_exact.append(is_tb)
+        tb_vt.append(vt if vt is not None else (0.0, 0.0, 0.0))
     codes, side = encode_batch(samples, device)
     mask_t = torch.from_numpy(np.stack(masks)).to(device)
     tgt = torch.tensor(tidx, dtype=torch.long, device=device)
     res_t = torch.from_numpy(np.stack([s.wdl for s in samples]).astype(np.float32)).to(device)
+    tb = dict(
+        pol_w=torch.tensor(pol_w, dtype=torch.float32, device=device),
+        exact=torch.tensor(tb_exact, dtype=torch.bool, device=device),
+        vt=torch.tensor(np.stack(tb_vt).astype(np.float32), device=device),
+    )
     return codes, side, mask_t, tgt, \
         torch.tensor(evals, dtype=torch.float32, device=device), \
-        torch.tensor(labeled, dtype=torch.bool, device=device), res_t
+        torch.tensor(labeled, dtype=torch.bool, device=device), res_t, tb
 
 
 def ensure_mask(args) -> MaskSidecar | None:
@@ -181,6 +208,10 @@ def main():
                          "the stop-grad final pass. 2x step cost at R=2.")
     ap.add_argument("--rct-lambda", type=float, default=0.5,
                     help="RCT consistency loss weight (used when --recycle > 1).")
+    ap.add_argument("--tb-sidecar", default="",
+                    help="JSONL from make_tb_labels.py: exact Syzygy WDL/DTZ labels for "
+                         "<=5-piece records. TB records get exact value targets, "
+                         "DTZ-optimal policy targets, full policy weight (E1).")
     ap.add_argument("--qat", action="store_true",
                     help="projection QAT (quantized-projected SGD): after each step, "
                          "project the quantized-linears' weights onto the s8 grid "
@@ -237,15 +268,28 @@ def main():
 
     step = 0
     mask_sc = ensure_mask(args)
+    tb_labels = None
+    if args.tb_sidecar and os.path.exists(args.tb_sidecar):
+        import json
+        tb_labels = {}
+        with open(args.tb_sidecar) as f:
+            for line in f:
+                r = json.loads(line)
+                ff = "abcdefgh".index(r["best"][0]); fr = int(r["best"][1]) - 1
+                tf = "abcdefgh".index(r["best"][2]); tr = int(r["best"][3]) - 1
+                from_sq = fr * 8 + ff   # python-chess square = rank*8 + file
+                to_sq = tr * 8 + tf
+                tb_labels[r["idx"]] = (int(r["wdl"]), from_sq * 64 + to_sq)
+        print(f"tb sidecar: {len(tb_labels)} exact endgame labels", flush=True)
     match_ema = None
     for epoch in range(args.epochs):
         stream = enumerate(iter_records(args.shard))
         done = 0
         while True:
-            batch = build_batch(stream, args.batch, device, require_targets=True, mask_sc=mask_sc, quality_filter=args.quality_filter)
+            batch = build_batch(stream, args.batch, device, require_targets=True, mask_sc=mask_sc, quality_filter=args.quality_filter, tb_labels=tb_labels)
             if batch is None:
                 break
-            codes, side, mask, tgt, evals, labeled, res_t = batch
+            codes, side, mask, tgt, evals, labeled, res_t, tb = batch
             if args.mirror and torch.rand(1).item() < 0.5:
                 from model import MIRROR_IDX
                 codes = codes.view(-1, 64)[:, MIRROR_IDX.to(codes.device)]
@@ -284,6 +328,8 @@ def main():
                         torch.clamp(evals.abs() / 150.0, max=1.0),
                         torch.ones_like(evals),
                     )
+                    if tb_labels:
+                        pw_weight = torch.where(tb["exact"], tb["pol_w"], pw_weight)
                     pl = (pl_raw * pw_weight).sum() / pw_weight.sum().clamp(min=1.0)
                 else:
                     pl = pl_raw.mean()
@@ -298,6 +344,9 @@ def main():
                 soft = torch.stack([pw, pd_, pl_loss], dim=1)
                 soft = soft / soft.sum(dim=1, keepdim=True)
                 soft_t = torch.where(labeled.unsqueeze(1), soft, res_t)
+                if tb_labels:
+                    # exact Syzygy value targets override everything else
+                    soft_t = torch.where(tb["exact"].unsqueeze(1), tb["vt"], soft_t)
                 vl = F.cross_entropy(wdl.float(), soft_t)
                 loss = pl + 0.5 * vl + args.rct_lambda * rct
             opt.zero_grad(set_to_none=True)
