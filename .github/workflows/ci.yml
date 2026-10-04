@@ -1,0 +1,25 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu && pip install numpy pytest python-chess
+      - name: Unit tests (format roundtrip, GAB identity, Muon, RCT, tokenizer)
+        run: python -m pytest tests_ci/ -q
+      - name: Import checks (trainer entry points)
+        run: |
+          cd trainer
+          python -c "import ast; [ast.parse(open(f).read()) for f in ['train.py','model.py','muon.py','format.py','train_diffusion.py','infer_diffusion.py','amz_pilot.py','loqw_sim.py','make_puzzles.py','score_puzzles.py']]; print('all parse')"
+      - name: Rust pipeline builds
+        run: cargo check --quiet
