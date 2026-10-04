@@ -175,6 +175,12 @@ def main():
     ap.add_argument("--ema-decay", type=float, default=0.999,
                     help="EMA shadow-weights decay (0 = off). Exports net_eN_ema.bin; "
                          "Lc0-style: EMA net is usually the stronger player.")
+    ap.add_argument("--recycle", type=int, default=1,
+                    help="Training-time recycling passes (RESEARCH-NOVEL N2). >1 adds "
+                         "pass-consistency loss (RCT): earlier passes are pulled toward "
+                         "the stop-grad final pass. 2x step cost at R=2.")
+    ap.add_argument("--rct-lambda", type=float, default=0.5,
+                    help="RCT consistency loss weight (used when --recycle > 1).")
     ap.add_argument("--mirror", action="store_true",
                     help="File-mirror augmentation (a<->h), prob 0.5 per batch: the only "
                          "legal chess symmetry without a color swap. Free 2x data.")
@@ -242,7 +248,22 @@ def main():
                 u, v = tgt // 64, tgt % 64
                 tgt = MIRROR_IDX.to(tgt.device)[u] * 64 + MIRROR_IDX.to(tgt.device)[v]
             with torch.autocast("cuda", dtype=torch.float16, enabled=device == "cuda"):
-                scores, promo, wdl = model(codes, side)
+                if args.recycle > 1:
+                    passes = model.forward_recycle(codes, side, R=args.recycle)
+                    scores, promo, wdl = passes[-1]
+                    # RCT: pull earlier passes toward the stop-grad final policy
+                    rct = scores.new_zeros(())
+                    with torch.no_grad():
+                        final_logp = F.log_softmax(
+                            passes[-1][0].reshape(codes.shape[0], -1), dim=-1)
+                    for ps, _, _ in passes[:-1]:
+                        pass_logp = F.log_softmax(ps.reshape(codes.shape[0], -1), dim=-1)
+                        rct = rct + F.kl_div(pass_logp, final_logp,
+                                             log_target=True, reduction="batchmean")
+                    rct = rct / (len(passes) - 1)
+                else:
+                    scores, promo, wdl = model(codes, side)
+                    rct = scores.new_zeros(())
                 flat = scores.reshape(codes.shape[0], 64 * 64)
                 flat = flat.masked_fill(~mask.reshape(codes.shape[0], -1), float("-inf"))
                 pl_raw = F.cross_entropy(flat, tgt, reduction="none")
@@ -273,7 +294,7 @@ def main():
                 soft = soft / soft.sum(dim=1, keepdim=True)
                 soft_t = torch.where(labeled.unsqueeze(1), soft, res_t)
                 vl = F.cross_entropy(wdl.float(), soft_t)
-                loss = pl + 0.5 * vl
+                loss = pl + 0.5 * vl + args.rct_lambda * rct
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             scaler.step(opt)
@@ -287,7 +308,8 @@ def main():
             done += int(tgt.numel())
             if step % 25 == 0:
                 print(f"epoch {epoch} step {step}: policy {pl.item():.4f} value {vl.item():.4f} "
-                      f"match {match_ema:.3f} ({done} positions this epoch)", flush=True)
+                      f"match {match_ema:.3f}{' rct ' + format(rct.item(), '.4f') if args.recycle > 1 else ''} "
+                      f"({done} positions this epoch)", flush=True)
             if args.steps and step % max(1, args.steps) == 0:
                 break
             if done >= total:

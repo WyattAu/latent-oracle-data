@@ -145,6 +145,9 @@ class ChessNet(nn.Module):
         bias = self._gab_bias()
         for blk in self.blocks:
             x = blk(x, bias)
+        return self._heads(x)
+
+    def _heads(self, x: torch.Tensor):
         hp = self.lnP(x)
         ef = self.Wfrom(hp) / math.sqrt(self.dpol)
         et = self.Wto(hp)
@@ -154,6 +157,23 @@ class ChessNet(nn.Module):
         vh = self.lnV(pooled)
         wdl = self.V2(F.gelu(self.V1(vh)))
         return scores, promo, wdl
+
+    def forward_recycle(self, codes: torch.Tensor, side: torch.Tensor, R: int = 2):
+        """Recycling trunk (RESEARCH-NOVEL.md N2): R passes over the shared
+        block stack, per-pass policy scores returned for the RCT loss.
+        Pass r reads the residual stream left by pass r-1 (engine parity:
+        src/nn/net.cpp run_trunk loop)."""
+        B = codes.shape[0]
+        sq = torch.arange(64, device=codes.device)
+        x = self.piece_emb(codes) + self.square_emb(sq).unsqueeze(0) + self.side_emb(side).unsqueeze(1)
+        bias = self._gab_bias()
+        pass_scores = []
+        for _ in range(max(1, R)):
+            for blk in self.blocks:
+                x = blk(x, bias)
+            scores, promo, wdl = self._heads(x)
+            pass_scores.append((scores, promo, wdl))
+        return pass_scores
 
     # ---------------------------------------------------------------- export
     def blob_tensors(self) -> list[torch.Tensor]:
