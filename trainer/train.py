@@ -22,7 +22,7 @@ import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from format import iter_records, count_records, move_to_uci, MaskSidecar  # noqa: E402
-from model import ChessNet  # noqa: E402
+from model import ChessNet, load_v1_into_v3  # noqa: E402
 
 PIECE_TO_PC = {1: ("P", 0), 2: ("N", 0), 3: ("B", 0), 4: ("R", 0), 5: ("Q", 0), 6: ("K", 0),
                9: ("P", 1), 10: ("N", 1), 11: ("B", 1), 12: ("R", 1), 13: ("Q", 1), 14: ("K", 1)}
@@ -195,6 +195,13 @@ def main():
     ap.add_argument("--init-from", default="", help="Load pre-trained .pt checkpoint for fine-tuning")
     ap.add_argument("--lr-ft", type=float, default=1e-4, help="Fine-tuning learning rate")
     ap.add_argument("--gab", action="store_true",
+                    help="Geometric Attention Bias (Chessformer GAB-lite) [see --v3 note]")
+    ap.add_argument("--v3", action="store_true",
+                    help="v3 architecture (SPEC-BLOB-V3.md): castle/ep/king/rating inputs, "
+                         "HiCo history, material-bucketed value head. Implies --gab layout. "
+                         "With --init-from on a v1/v2 checkpoint, warm-starts via "
+                         "load_v1_into_v3 (bit-identical trunk, tiled value head).")
+    ap.add_argument("--gab-legacy", action="store_true",
                     help="Geometric Attention Bias (Chessformer GAB-lite): learned per-head "
                          "bias over square-relation buckets. Zero-init = v1 model exactly, "
                          "so --init-from v1 checkpoints warm-start losslessly. Exports blob v2.")
@@ -234,15 +241,21 @@ def main():
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(0)
-    model = ChessNet(args.d, args.layers, args.heads, args.dff, args.dpol, gab=args.gab).to(device)
+    model = ChessNet(args.d, args.layers, args.heads, args.dff, args.dpol,
+                     gab=args.gab or args.v3, v3=args.v3).to(device)
     if args.init_from and os.path.exists(args.init_from):
         sd = torch.load(args.init_from, map_location="cpu", weights_only=True)
-        missing = model.load_state_dict(sd, strict=False)
-        if args.gab and all("gab_table" in k for k in missing.unexpected_keys) and not missing.missing_keys:
-            print(f"loaded pre-trained weights from {args.init_from} (GAB table zero-init)", flush=True)
-        elif not missing.missing_keys and not missing.unexpected_keys:
-            print(f"loaded pre-trained weights from {args.init_from}", flush=True)
+        missing = None
+        if args.v3 and "V2.weight" in sd and sd["V2.weight"].shape[0] == 3:
+            load_v1_into_v3(model, sd)
+            print(f"loaded pre-trained weights from {args.init_from} (v1->v3 warm-start)", flush=True)
         else:
+            missing = model.load_state_dict(sd, strict=False)
+        if missing is not None and args.gab and all("gab_table" in k for k in missing.unexpected_keys) and not missing.missing_keys:
+            print(f"loaded pre-trained weights from {args.init_from} (GAB table zero-init)", flush=True)
+        elif missing is not None and not missing.missing_keys and not missing.unexpected_keys:
+            print(f"loaded pre-trained weights from {args.init_from}", flush=True)
+        elif missing is not None:
             print(f"loaded pre-trained weights from {args.init_from} "
                   f"(missing={len(missing.missing_keys)} unexpected={len(missing.unexpected_keys)})", flush=True)
     from muon import Muon, split_params_for_muon
