@@ -63,6 +63,11 @@ class Loqw:
         assert self.off == len(self.buf), (self.off, len(self.buf))
 
 
+import math
+
+_erf_vec = np.vectorize(math.erf, otypes=[np.float32])
+
+
 def ql_np(x: torch.Tensor, ql, dbg=""):
     act_s, zp, w, w_s, b, rs = ql
     a = np.clip(np.rint(x.numpy() / act_s).astype(np.int64) + zp, 0, 255).astype(np.int32)
@@ -102,9 +107,15 @@ def forward(m: Loqw, codes: torch.Tensor, side: int, dbg=False):
         ctx = (att @ v4).transpose(1, 2).reshape(B, T, D)
         wo_w = torch.from_numpy(lay["wow"]).float().reshape(D, D)
         wo_b = torch.from_numpy(lay["wob"]).float()
-        x = x + ctx @ wo_w + wo_b
+        x = x + ctx @ wo_w.transpose(-1, -2) + wo_b  # blob Wo is (out,in) row-major
         h2 = ln_np(x, lay["ln2w"], lay["ln2b"])
-        g = torch.nn.functional.gelu(ql_np(h2, lay["W1"]))
+        w1 = ql_np(h2, lay["W1"])
+        # libm-erf gelu — bit-matches the engine's gelu. torch.erf differs
+        # from libm erf at ~1e-7, which flips int8 quantization boundaries
+        # a few times per board (visible as 1e-3..1e-2 policy noise).
+        import math as _math
+        w1n = w1.numpy()
+        g = torch.from_numpy(0.5 * w1n * (1.0 + _erf_vec(w1n * 0.70710678118654752)))
         mlp = ql_np(g, lay["W2"])
         x = x + mlp
         if dbg and li == 0:
@@ -117,7 +128,8 @@ def forward(m: Loqw, codes: torch.Tensor, side: int, dbg=False):
     pooled = hp.mean(0)
     promo = torch.from_numpy(m.promow).float().reshape(4, d) @ pooled + torch.from_numpy(m.promob).float()
     hv = ln_np(pooled.unsqueeze(0), m.lnVw, m.lnVb)
-    vhid = torch.nn.functional.gelu(ql_np(hv, m.V1)).reshape(128)
+    vhid_q = ql_np(hv, m.V1).numpy()
+    vhid = torch.from_numpy(0.5 * vhid_q * (1.0 + _erf_vec(vhid_q * 0.70710678118654752))).reshape(128)
     wdl = torch.from_numpy(m.V2w).float().reshape(3, 128) @ vhid + torch.from_numpy(m.V2b).float()
     if dbg:
         print("wdl logits:", wdl.tolist())
