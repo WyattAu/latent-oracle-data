@@ -14,6 +14,8 @@ import argparse
 import os
 import sys
 
+import math
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -68,7 +70,7 @@ def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: Mask
     target becomes the DTZ-optimal move and the value target the exact WDL,
     both at full policy weight (RESEARCH-ENDGAME-RL E1)."""
     samples, masks, tidx, evals, labeled = [], [], [], [], []
-    pol_w, tb_exact, tb_vt = [], [], []
+    pol_w, tb_exact, tb_vt, fmoves = [], [], [], []
     while len(samples) < batch:
         item = next(stream, None)
         if item is None:
@@ -122,6 +124,7 @@ def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: Mask
         pol_w.append(pw)
         tb_exact.append(is_tb)
         tb_vt.append(vt if vt is not None else (0.0, 0.0, 0.0))
+        fmoves.append(float(s.fullmove))
     codes, side = encode_batch(samples, device)
     mask_t = torch.from_numpy(np.stack(masks)).to(device)
     tgt = torch.tensor(tidx, dtype=torch.long, device=device)
@@ -130,6 +133,7 @@ def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: Mask
         pol_w=torch.tensor(pol_w, dtype=torch.float32, device=device),
         exact=torch.tensor(tb_exact, dtype=torch.bool, device=device),
         vt=torch.tensor(np.stack(tb_vt).astype(np.float32), device=device),
+        fm=torch.tensor(fmoves, dtype=torch.float32, device=device),
     )
     return codes, side, mask_t, tgt, \
         torch.tensor(evals, dtype=torch.float32, device=device), \
@@ -208,6 +212,12 @@ def main():
                          "the stop-grad final pass. 2x step cost at R=2.")
     ap.add_argument("--rct-lambda", type=float, default=0.5,
                     help="RCT consistency loss weight (used when --recycle > 1).")
+    ap.add_argument("--sched", choices=["const", "cosine", "wsd"], default="const",
+                    help="LR schedule: const (legacy default), cosine->10%%, or WSD "
+                         "(warmup-stable-decay: stable until 90%% then linear to 10%%).")
+    ap.add_argument("--opening-weight", type=float, default=1.0,
+                    help="Loss weight multiplier for fullmove<=12 records (opening-phase "
+                         "upweighting, RESEARCH-ROUND9 A3). 1.0 = off.")
     ap.add_argument("--tb-sidecar", default="",
                     help="JSONL from make_tb_labels.py: exact Syzygy WDL/DTZ labels for "
                          "<=5-piece records. TB records get exact value targets, "
@@ -258,6 +268,8 @@ def main():
         opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=args.wd)
     print(f"params: {sum(p.numel() for p in model.parameters())/1e6:.1f}M on {device} "
           f"optimizer={args.optimizer}{' gab' if args.gab else ''}", flush=True)
+    total_steps = None  # set after shard count known (below)
+    sched_kind = args.sched
 
     ema_params = ([p.detach().clone() for p in model.parameters()]
                   if args.ema_decay > 0 else None)
@@ -282,6 +294,21 @@ def main():
                 tb_labels[r["idx"]] = (int(r["wdl"]), from_sq * 64 + to_sq)
         print(f"tb sidecar: {len(tb_labels)} exact endgame labels", flush=True)
     match_ema = None
+    if sched_kind != "const":
+        steps_per_epoch = max(1, total // args.batch)
+        total_steps = steps_per_epoch * args.epochs
+        warm = max(1, int(0.05 * total_steps))
+        if sched_kind == "cosine":
+            lambda_lr = lambda st: min(1.0, st / warm) * (0.1 + 0.45 * (1 + math.cos(math.pi * min(1.0, st / max(1, total_steps)))))
+        else:  # wsd: stable, then linear to 10%
+            decay_start = int(0.9 * total_steps)
+            lambda_lr = lambda st: min(1.0, st / warm) * (
+                1.0 if st < decay_start else max(0.1, 1.0 - 0.9 * (st - decay_start) / max(1, total_steps - decay_start)))
+        scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lambda_lr) if not isinstance(opt, dict) else None
+        try:
+            scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lambda_lr)
+        except TypeError:
+            scheduler = None  # joint optimizer wrapper: skip (short fine-tunes)
     for epoch in range(args.epochs):
         stream = enumerate(iter_records(args.shard))
         done = 0
@@ -328,6 +355,11 @@ def main():
                         torch.clamp(evals.abs() / 150.0, max=1.0),
                         torch.ones_like(evals),
                     )
+                    if args.opening_weight != 1.0:
+                        ow = torch.where(tb["fm"] <= 12,
+                                         torch.full_like(tb["fm"], args.opening_weight),
+                                         torch.ones_like(tb["fm"]))
+                        pw_weight = pw_weight * ow
                     if tb_labels:
                         pw_weight = torch.where(tb["exact"], tb["pol_w"], pw_weight)
                     pl = (pl_raw * pw_weight).sum() / pw_weight.sum().clamp(min=1.0)
@@ -353,6 +385,8 @@ def main():
             scaler.scale(loss).backward()
             scaler.step(opt)
             scaler.update()
+            if sched_kind != "const" and scheduler is not None:
+                scheduler.step()
             if ema_params is not None:
                 with torch.no_grad():
                     d = args.ema_decay

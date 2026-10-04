@@ -44,6 +44,7 @@ class Sample:
     wdl: np.ndarray          # (3,) float32, white POV
     castling: int = 0        # rights bitmask (shard convention)
     ep: int = 255            # ep square, 255 = none
+    fullmove: int = 1        # move number (opening upweighting)
 
 
 def read_header(path: str) -> tuple[int, int]:
@@ -84,6 +85,7 @@ def iter_records(path: str):
                     wdl=rec["wdl"].astype(np.float32),
                     castling=int(rec["castling"]),
                     ep=int(rec["ep"]),
+                    fullmove=int(rec["fullmove"]),
                 )
 
 
