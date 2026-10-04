@@ -181,6 +181,11 @@ def main():
                          "the stop-grad final pass. 2x step cost at R=2.")
     ap.add_argument("--rct-lambda", type=float, default=0.5,
                     help="RCT consistency loss weight (used when --recycle > 1).")
+    ap.add_argument("--qat", action="store_true",
+                    help="projection QAT (quantized-projected SGD): after each step, "
+                         "project the quantized-linears' weights onto the s8 grid "
+                         "(per-tensor symmetric round-to-nearest). Removes most of the "
+                         "INT8 export drop without STE machinery.")
     ap.add_argument("--mirror", action="store_true",
                     help="File-mirror augmentation (a<->h), prob 0.5 per batch: the only "
                          "legal chess symmetry without a color swap. Free 2x data.")
@@ -304,6 +309,16 @@ def main():
                     d = args.ema_decay
                     for e, p in zip(ema_params, model.parameters()):
                         e.mul_(d).add_(p.detach(), alpha=1.0 - d)
+            if args.qat:
+                with torch.no_grad():
+                    lins = [b.Wq for b in model.blocks] + [b.Wk for b in model.blocks] + \
+                           [b.Wv for b in model.blocks] + [b.W1 for b in model.blocks] + \
+                           [b.W2 for b in model.blocks] + \
+                           [model.Wfrom, model.Wto, model.V1]
+                    for lin in lins:
+                        w = lin.weight.data
+                        scale = (w.abs().max() / 127.0).clamp(min=1e-12)
+                        w.copy_(torch.round(w / scale).clamp(-127, 127) * scale)
             step += 1
             done += int(tgt.numel())
             if step % 25 == 0:

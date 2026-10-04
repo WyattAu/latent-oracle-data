@@ -100,9 +100,10 @@ class ChessNet(nn.Module):
         self.square_emb = nn.Embedding(64, d)
         self.side_emb = nn.Embedding(2, d)
         self.blocks = nn.ModuleList(Block(d, heads, dff) for _ in range(layers))
-        if gab:
+        if gab or v3:
             # Zero-init: with bias 0 the GAB model is functionally identical
             # to the v1 model, so v1 checkpoints warm-start losslessly.
+            # v3 blobs carry the table unconditionally (version-3 layout).
             self.gab_table = nn.Parameter(torch.zeros(heads, GAB_BUCKETS))
             self.register_buffer("gab_buckets", self._build_buckets(), persistent=False)
         if v3:
@@ -154,7 +155,7 @@ class ChessNet(nn.Module):
         return gab_bucket_table()
 
     def _gab_bias(self) -> torch.Tensor | None:
-        if not self.gab:
+        if not (self.gab or self.v3):
             return None
         # (H, T, T): per-head lookup of bucket bias
         return self.gab_table[:, self.gab_buckets]  # (H, 64, 64)
@@ -280,7 +281,7 @@ class ChessNet(nn.Module):
                    self.lnV.weight, self.lnV.bias,
                    self.V1.weight.flatten(), self.V1.bias,
                    self.V2.weight.flatten(), self.V2.bias]
-        if self.gab:
+        if self.gab or self.v3:
             ts += [self.gab_table.flatten()]
         if self.v3:
             ts += [self.castle_emb.weight.flatten(),
@@ -331,7 +332,7 @@ def load_v1_into_v3(model_v3: "ChessNet", v1_sd: dict) -> None:
         return gab_bucket_table()
 
     def _gab_bias(self) -> torch.Tensor | None:
-        if not self.gab:
+        if not (self.gab or self.v3):
             return None
         # (H, T, T): per-head lookup of bucket bias
         return self.gab_table[:, self.gab_buckets]  # (H, 64, 64)

@@ -44,10 +44,11 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from model import ChessNet  # noqa: E402
+from model import ChessNet, load_v1_into_v3  # noqa: E402
 from format import iter_records  # noqa: E402
 
 BLOB_MAGIC = 0x57514F4C  # "LOQW" LE
+VER_1, VER_2_GAB, VER_3 = 1, 2, 3
 
 
 def quant_s8(t: torch.Tensor):
@@ -118,22 +119,37 @@ def main():
     ap.add_argument("--heads", type=int, default=8)
     ap.add_argument("--dff", type=int, default=1024)
     ap.add_argument("--dpol", type=int, default=128)
+    ap.add_argument("--gab", action="store_true", help="net has GAB (blob ver 2)")
+    ap.add_argument("--v3", action="store_true",
+                    help="net is v3 (SPEC-BLOB-V3.md): castle/ep/king/rating inputs, "
+                         "material-bucketed value head, HiCo tail. Implies --gab layout "
+                         "prefix; writes blob version 3.")
+    ap.add_argument("--warm-v1", action="store_true",
+                    help="checkpoint is v1/v2-shaped; load into the v3 model via "
+                         "load_v1_into_v3 (zero-init tail, tiled value head)")
     ap.add_argument("--shard", default="", help="shard for calibration samples")
     ap.add_argument("--calib", type=int, default=2048)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
     torch.manual_seed(0)
-    model = ChessNet(args.d, args.layers, args.heads, args.dff, args.dpol).eval()
-    model.load_state_dict(torch.load(args.net, map_location="cpu", weights_only=True))
+    model = ChessNet(args.d, args.layers, args.heads, args.dff, args.dpol,
+                     gab=args.gab or args.v3, v3=args.v3).eval()
+    sd = torch.load(args.net, map_location="cpu", weights_only=True)
+    if args.v3 and args.warm_v1:
+        load_v1_into_v3(model, sd)
+    else:
+        model.load_state_dict(sd)
 
     cal = Calibrator()
     cal.attach(model)
-    codes_list, sides = [], []
+    codes_list, sides, castles, eps = [], [], [], []
     if args.shard and os.path.exists(args.shard):
         for s in iter_records(args.shard):
             codes_list.append(s.board_codes)
             sides.append(s.side)
+            castles.append(s.castling & 15)
+            eps.append(0 if s.ep >= 64 else 1 + (s.ep % 8))
             if len(codes_list) >= args.calib:
                 break
     if not codes_list:
@@ -141,17 +157,27 @@ def main():
         codes_list = [torch.randint(0, 15, (64,), generator=g).numpy().astype(np.uint8)
                       for _ in range(args.calib)]
         sides = list(np.zeros(args.calib, dtype=np.int64))
+        castles = list(np.random.RandomState(42).randint(0, 16, args.calib))
+        eps = list(np.random.RandomState(43).randint(0, 9, args.calib))
     with torch.no_grad():
         for i in range(0, len(codes_list), 128):
             chunk = codes_list[i:i + 128]
-            model(torch.from_numpy(np.stack(chunk)).long(),
-                  torch.tensor(sides[i:i + len(chunk)], dtype=torch.long))
+            n = len(chunk)
+            if args.v3:
+                model(torch.from_numpy(np.stack(chunk)).long(),
+                      torch.tensor(sides[i:i + n], dtype=torch.long),
+                      castle=torch.tensor(castles[i:i + n], dtype=torch.long),
+                      ep=torch.tensor(eps[i:i + n], dtype=torch.long))
+            else:
+                model(torch.from_numpy(np.stack(chunk)).long(),
+                      torch.tensor(sides[i:i + n], dtype=torch.long))
     cal.detach()
     print("calibrated tensors:", len(cal.lo_hi))
 
     d, dff, dpol = args.d, args.dff, args.dpol
+    version = VER_3 if args.v3 else (VER_2_GAB if args.gab else VER_1)
     out = bytearray()
-    out += struct.pack("<IIIIIII", BLOB_MAGIC, 1, d, args.layers, args.heads, dff, dpol)
+    out += struct.pack("<IIIIIII", BLOB_MAGIC, version, d, args.layers, args.heads, dff, dpol)
 
     def f32(t: torch.Tensor):
         out.extend(t.detach().to(torch.float32).contiguous().numpy().tobytes())
@@ -175,7 +201,23 @@ def main():
     f32(model.promo.weight.flatten()); f32(model.promo.bias)
     f32(model.lnV.weight); f32(model.lnV.bias)
     qlinear_bytes(model.V1, "V1", cal, out, d, 128)
-    f32(model.V2.weight.flatten()); f32(model.V2.bias)
+    if args.v3:
+        # v1-slot V2 carries bucket 0 (v1-shaped) so the C++ reader's offsets
+        # stay valid; the full bucketed head goes to the v3 tail below.
+        f32(model.V2.weight.view(8, 3, 128)[0].flatten()); f32(model.V2.bias.view(8, 3)[0])
+    else:
+        f32(model.V2.weight.flatten()); f32(model.V2.bias)
+
+    if args.gab or args.v3:
+        f32(model.gab_table.flatten())
+    if args.v3:
+        f32(model.castle_emb.weight.flatten())
+        f32(model.ep_emb.weight.flatten())
+        f32(model.king_bucket_emb.weight.flatten())
+        f32(model.rating_emb.weight.flatten())
+        f32(model.hist_emb.flatten())
+        f32(model.hist_gate)
+        f32(model.V2.weight.flatten()); f32(model.V2.bias)
 
     with open(args.out, "wb") as f:
         f.write(out)
