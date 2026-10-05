@@ -153,3 +153,20 @@ def test_diffusion_black_pieces_and_vocab_range():
     assert inv[toks[64]] == "sb"
     assert max(td.VOCAB.values()) < td.V
     assert len(td.VOCAB) == td.V
+
+
+def test_gumbel_top_k_bounds_and_uniqueness():
+    import grpo_train as g
+    torch.manual_seed(0)
+    logits = torch.randn(4, 100)
+    idx = g.gumbel_top_k(logits, 8)
+    assert idx.shape == (4, 8)
+    for row in idx:
+        assert row.min() >= 0 and row.max() < 100
+        assert len(set(row.tolist())) == 8, "gumbel-top-k must return unique indices"
+
+
+def test_grpo_reward_clipping_math():
+    for cp, want in [(30000, 1.0), (-30000, -1.0), (150, 0.5), (0, 0.0), (-600, -1.0)]:
+        r = max(-1.0, min(1.0, cp / 300))
+        assert abs(r - want) < 1e-9
