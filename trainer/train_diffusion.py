@@ -25,8 +25,8 @@ import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from format import iter_records  # noqa: E402
+from make_puzzles import codes_to_board  # noqa: E402
 from model import Block  # noqa: E402
-from make_puzzles import codes_to_board, PIECE_TO_PC  # noqa: E402
 
 SPECIALS = {"PAD": 0, "MASK": 1, "SEP": 2}
 BOARD_CHARS = [".", "P", "N", "B", "R", "Q", "K", "p", "n", "b", "r", "q", "k"]

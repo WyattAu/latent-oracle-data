@@ -120,7 +120,7 @@ pub fn mv_from(mv: &Move) -> Square {
     match mv {
         Move::Normal { from, .. } => *from,
         Move::EnPassant { from, .. } => *from,
-        Move::Castle { king, rook } => *king,
+        Move::Castle { king, rook: _ } => *king,
         Move::Put { .. } => unreachable!(),
     }
 }

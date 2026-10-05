@@ -11,17 +11,16 @@ engine or the exported weights).
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
-
-import math
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from format import iter_records, count_records, move_to_uci, MaskSidecar  # noqa: E402
+from format import MaskSidecar, count_records, iter_records  # noqa: E402
 from model import ChessNet, load_v1_into_v3  # noqa: E402
 
 PIECE_TO_PC = {1: ("P", 0), 2: ("N", 0), 3: ("B", 0), 4: ("R", 0), 5: ("Q", 0), 6: ("K", 0),

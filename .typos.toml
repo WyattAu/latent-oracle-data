@@ -1,0 +1,7 @@
+# typos-ci/typos — keep the allow list short; add a word only when the
+# "typo" is actually a domain term.
+[default]
+extend-ignore-identifiers-re = []
+
+[files]
+extend-exclude = ["LICENSE", "PROVENANCE.md"]

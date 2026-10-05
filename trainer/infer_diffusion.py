@@ -11,14 +11,19 @@ import argparse
 import os
 import sys
 
-import numpy as np
+import chess
 import torch
 import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import train_diffusion as td  # noqa: E402
-from train_diffusion import (DiffuNet, STATE_LEN, SEP, MASK, PAD, VOCAB,  # noqa: E402
-                             MOVE_BASE, SYM2CODE)
+from train_diffusion import (  # noqa: E402
+    MASK,
+    MOVE_BASE,
+    STATE_LEN,
+    SYM2CODE,
+    DiffuNet,
+)
 
 
 def id_to_move_tok(i: int):

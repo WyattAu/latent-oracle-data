@@ -7,15 +7,14 @@ from __future__ import annotations
 
 import argparse
 import os
-import struct
 import sys
 
 import numpy as np
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from model import ChessNet, PIECE_CODES  # noqa: E402
 from format import square_name  # noqa: E402
+from model import ChessNet  # noqa: E402
 
 
 def codes_from_fen(fen: str) -> np.ndarray:

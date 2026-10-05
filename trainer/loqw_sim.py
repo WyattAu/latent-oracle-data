@@ -2,6 +2,7 @@
 src/nn/netq.cpp). Single source of truth: the blob itself.
 """
 import struct
+
 import numpy as np
 import torch
 
@@ -113,7 +114,6 @@ def forward(m: Loqw, codes: torch.Tensor, side: int, dbg=False):
         # libm-erf gelu — bit-matches the engine's gelu. torch.erf differs
         # from libm erf at ~1e-7, which flips int8 quantization boundaries
         # a few times per board (visible as 1e-3..1e-2 policy noise).
-        import math as _math
         w1n = w1.numpy()
         g = torch.from_numpy(0.5 * w1n * (1.0 + _erf_vec(w1n * 0.70710678118654752)))
         mlp = ql_np(g, lay["W2"])

@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 
 import chess
 import chess.pgn
 import numpy as np
 import torch
 
-import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from model import ChessNet  # noqa: E402
 

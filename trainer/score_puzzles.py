@@ -11,8 +11,8 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from model import ChessNet  # noqa: E402
 from make_puzzles import codes_to_board  # noqa: E402
+from model import ChessNet  # noqa: E402
 
 
 def fen_to_codes(fen: str) -> tuple[np.ndarray, int]:

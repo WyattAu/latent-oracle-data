@@ -16,7 +16,7 @@ import chess
 import chess.syzygy
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from format import iter_records, move_to_uci  # noqa: E402
+from format import iter_records  # noqa: E402
 from make_puzzles import codes_to_board  # noqa: E402
 
 

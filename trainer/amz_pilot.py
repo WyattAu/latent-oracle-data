@@ -10,7 +10,6 @@ pilot fixes alpha=0.3 to keep an oracle floor.
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import os
 import sys
@@ -22,7 +21,6 @@ import torch.nn.functional as F
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from format import iter_records  # noqa: E402
 from model import ChessNet  # noqa: E402
-from make_puzzles import codes_to_board  # noqa: E402
 
 SYM2CODE = {"P": 1, "N": 2, "B": 3, "R": 4, "Q": 5, "K": 6,
             "p": 9, "n": 10, "b": 11, "r": 12, "q": 13, "k": 14}

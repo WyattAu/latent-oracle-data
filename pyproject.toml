@@ -1,0 +1,37 @@
+# Virtual workspace root (house pattern: uv owns resolution, tools configured
+# here). The research code lives in trainer/ as a flat module dir — armed
+# pipeline scripts invoke it by path, so no package restructuring until the
+# experiment calendar allows it.
+[project]
+name = "latent-oracle-data-workspace"
+version = "0.1.0"
+description = "latent-oracle data pipeline + trainer tooling (virtual root)"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+  "numpy>=2.0",
+  "pytest>=8.3",
+  "torch>=2.4",
+  "ruff>=0.8",
+  "chess>=1.10",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["examples"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+# research scripts: E501 handled by line-length; try/except-pass in probes
+# is deliberate; print() is the logging surface for armed pipelines
+ignore = ["T201", "E722"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests_ci"]
+addopts = "-q"

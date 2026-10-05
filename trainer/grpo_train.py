@@ -27,8 +27,8 @@ import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from format import iter_records  # noqa: E402
-from model import ChessNet  # noqa: E402
 from make_puzzles import codes_to_board  # noqa: E402
+from model import ChessNet  # noqa: E402
 
 
 class SFEval:

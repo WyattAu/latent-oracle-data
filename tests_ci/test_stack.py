@@ -12,10 +12,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 
 
 def test_format_roundtrip(tmp_path):
-    from format import Sample, count_records, iter_records
     import struct
+
     # build a minimal shard: header + 2 records of 64 bytes
-    from format import REC_DTYPE
+    from format import REC_DTYPE, count_records, iter_records
     rec_dtype = REC_DTYPE
     assert rec_dtype.itemsize == 64, rec_dtype.itemsize
     r0 = np.zeros(2, dtype=rec_dtype)
@@ -72,8 +72,8 @@ def test_forward_recycle_shapes_and_grad():
 
 
 def test_muon_step_reduces_loss():
-    from muon import Muon, split_params_for_muon
     from model import ChessNet
+    from muon import Muon, split_params_for_muon
     torch.manual_seed(0)
     net = ChessNet(d=32, layers=1, heads=2, dff=32, dpol=16)
     mu, ad = split_params_for_muon(net)
@@ -97,8 +97,8 @@ def test_muon_step_reduces_loss():
 
 
 def test_rct_loss_finite():
-    from model import ChessNet
     import torch.nn.functional as F
+    from model import ChessNet
     torch.manual_seed(0)
     m = ChessNet(d=32, layers=2, heads=2, dff=32, dpol=16)
     codes = torch.randint(0, 15, (2, 64))
@@ -113,8 +113,8 @@ def test_rct_loss_finite():
 
 
 def test_diffusion_tokenizer_roundtrip():
-    import train_diffusion as td
     import chess
+    import train_diffusion as td
     board = chess.Board()
     codes = np.zeros(64, dtype=np.uint8)
     for sq in chess.SQUARES:
@@ -137,9 +137,9 @@ def test_diffusion_tokenizer_roundtrip():
 
 
 def test_diffusion_black_pieces_and_vocab_range():
-    import train_diffusion as td
-    import numpy as np
     import chess
+    import numpy as np
+    import train_diffusion as td
     board = chess.Board()
     codes = np.zeros(64, dtype=np.uint8)
     for sq in chess.SQUARES:

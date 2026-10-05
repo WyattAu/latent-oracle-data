@@ -311,7 +311,7 @@ class ChessNet(nn.Module):
                 f.write(t.detach().to(torch.float32).cpu().contiguous().numpy().tobytes())
 
 
-def load_v1_into_v3(model_v3: "ChessNet", v1_sd: dict) -> None:
+def load_v1_into_v3(model_v3: ChessNet, v1_sd: dict) -> None:
     """Warm-start a v3 model from v1/v2 weights (SPEC-BLOB-V3.md §1).
     New v3 inputs are zero-init (constructor); the value head's v1 tail is
     TILED across all 8 material buckets so the loaded model is functionally

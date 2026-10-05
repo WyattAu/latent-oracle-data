@@ -7,9 +7,6 @@ from __future__ import annotations
 
 import argparse
 import collections
-import io
-import os
-import sys
 
 import chess
 import chess.pgn
