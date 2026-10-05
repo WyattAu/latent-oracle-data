@@ -7,6 +7,7 @@ const SAMPLE: &str = "\n[Event \"Test game 1\"]\n[WhiteElo \"2400\"]\n[BlackElo 
 
 fn shard_args(dir: &std::path::Path) -> ShardArgs {
     ShardArgs {
+        no_elo_filter: false,
         input: write_sample(),
         out_dir: dir.display().to_string(),
         min_elo: 2000,

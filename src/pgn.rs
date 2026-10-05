@@ -91,6 +91,7 @@ pub fn next_game<R: BufRead>(reader: &mut R) -> io::Result<Option<Game>> {
     // Tokenize move text.
     let tokens: Vec<String> = moves
         .split_whitespace()
+        .filter(|t| !is_result(t))
         .map(|t| {
             // Strip leading move number pattern like "1." or "12..." — the Lc0 PGN
             // format fuses the move number with the first move of each pair
@@ -98,6 +99,7 @@ pub fn next_game<R: BufRead>(reader: &mut R) -> io::Result<Option<Game>> {
             let stripped = t.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.');
             stripped.to_string()
         })
+        .filter(|t| !is_result(t) && !t.starts_with('-'))
         .filter(|t| {
             if is_result(t) {
                 return false;
