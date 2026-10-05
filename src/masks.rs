@@ -13,7 +13,6 @@
 use crate::chess_glue;
 use crate::shard::{Record, ShardReader};
 use shakmaty::{CastlingMode, Chess, FromSetup, Position};
-use std::io::SeekFrom;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
@@ -53,7 +52,7 @@ pub fn run(args: &MasksArgs) -> Result<(), String> {
         }
         offsets.push(payload.len() as u64);
         n += 1;
-        if n % 1_000_000 == 0 {
+        if n.is_multiple_of(1_000_000) {
             eprintln!("masks: {n} records");
         }
     }

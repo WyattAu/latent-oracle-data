@@ -40,7 +40,7 @@ fn strip_movetext(line: &str) -> String {
                     }
                 }
             }
-            c if brace > 0 || paren > 0 => {}
+            _c if brace > 0 || paren > 0 => {}
             c => out.push(c),
         }
     }
@@ -106,7 +106,7 @@ pub fn next_game<R: BufRead>(reader: &mut R) -> io::Result<Option<Game>> {
             }
             // drop move numbers like "1." "12..." and stray dots
             let cleaned = t.trim_end_matches('.');
-            !cleaned.is_empty() && cleaned.chars().all(|c| c.is_ascii_digit()) == false
+            !cleaned.is_empty() && !cleaned.chars().all(|c| c.is_ascii_digit())
                 || (cleaned.len() > t.len() && !cleaned.is_empty())
         })
         .filter(|t| !{

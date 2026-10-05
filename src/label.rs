@@ -29,14 +29,20 @@ pub struct LabelArgs {
 }
 
 struct Patch {
+    /// Record index this patch came from (provenance; also used in logs).
+    #[allow(dead_code)]
     idx: u64,
     eval_cp: i16,
     targets: [(u8, u8, u8); 3],
     n_targets: u8,
 }
 
+/// (eval in centipawns from the mover's side, is_mate, pv targets)
+type Analysis = (i64, bool, Vec<(u8, u8, u8)>);
+
 struct Engine {
-    child: Child,
+    /// Held so the child process lives as long as the pipes; never read.
+    _child: Child,
     stdin: ChildStdin,
     reader: BufReader<ChildStdout>,
 }
@@ -51,13 +57,13 @@ impl Engine {
         let stdin = child.stdin.take().expect("stdin");
         let stdout = child.stdout.take().expect("stdout");
         let mut e = Engine {
-            child,
+            _child: child,
             stdin,
             reader: BufReader::with_capacity(1 << 16, stdout),
         };
         e.send("uci")?;
         e.wait_for("uciok")?;
-        e.send(&format!("setoption name Threads value 1"))?;
+        e.send("setoption name Threads value 1")?;
         e.send(&format!("setoption name Hash value {hash_mb}"))?;
         e.send(&format!("setoption name Multipv value {multipv}"))?;
         e.send("isready")?;
@@ -89,7 +95,7 @@ impl Engine {
     }
 
     /// Analyze the mover-POV position; returns (mover_cp, mate?, pv targets).
-    fn analyze(&mut self, fen: &str, depth: u16, multipv: u8) -> std::io::Result<(i64, bool, Vec<(u8, u8, u8)>)> {
+    fn analyze(&mut self, fen: &str, depth: u16, multipv: u8) -> std::io::Result<Analysis> {
         self.send(&format!("position fen {fen}"))?;
         self.send(&format!("go depth {depth}"))?;
 
@@ -234,12 +240,16 @@ fn analyze_batch(args: &LabelArgs, batch: &[Record], base: u64) -> HashMap<usize
                         failures.fetch_add(1, Ordering::Relaxed);
                         return;
                     };
-                    match analyze_record(e, (base + i as u64) as u64, &batch[i], args.depth, args.multipv) {
+                    match analyze_record(e, base + i as u64, &batch[i], args.depth, args.multipv) {
                         Ok(p) => {
                             merged.lock().unwrap().insert(i, p);
                         }
-                        Err(_) => {
+                        Err(err) => {
                             // engine desynced: respawn and skip the record
+                            eprintln!(
+                                "label: record {} failed analysis ({err}); respawning",
+                                base + i as u64
+                            );
                             failures.fetch_add(1, Ordering::Relaxed);
                             *slot = None;
                         }

@@ -1,7 +1,7 @@
 //! Glue between shakmaty positions and the shard record format.
 
 use crate::shard::Record;
-use shakmaty::{fen::Fen, CastlingMode, Chess, Color, EnPassantMode, FromSetup, Move, Position, Role, Square};
+use shakmaty::{fen::Fen, Chess, Color, EnPassantMode, FromSetup, Move, Position, Role, Square};
 #[allow(unused_imports)]
 use shakmaty::Setup;
 
@@ -54,7 +54,7 @@ fn square_index(s: Square) -> u8 {
 /// En-passant normalization comes from shakmaty's `LegalOnly` mode, which is
 /// exactly the engine's convention.
 pub fn capture_meta(pos: &Chess) -> (u8, u8, u8, u8, u16) {
-    let board = pos.board();
+    let _board = pos.board();
     let side = match pos.turn() {
         Color::White => 0,
         Color::Black => 1,

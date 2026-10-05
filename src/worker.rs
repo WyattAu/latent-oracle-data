@@ -2,8 +2,8 @@
 
 use crate::chess_glue;
 use crate::pgn;
-use crate::shard::{Record, ShardWriter};
-use shakmaty::{Chess, Move};
+use crate::shard::ShardWriter;
+use shakmaty::Move;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter};
@@ -93,14 +93,14 @@ pub fn run(args: &ShardArgs) -> Result<(), String> {
 
             if ply >= args.min_ply
                 && ply <= args.max_ply
-                && (ply - args.min_ply) % args.sample.max(1) == 0
+                && (ply - args.min_ply).is_multiple_of(args.sample.max(1))
             {
                 let rec = chess_glue::capture_record(&pos, &mv, result_wdl);
                 let key = rec.key();
                 if seen.insert(key) {
                     writer.write(&rec).map_err(|e| e.to_string())?;
                     written += 1;
-                    if written % 1_000_000 == 0 {
+                    if written.is_multiple_of(1_000_000) {
                         eprintln!("shard: {written} positions ({games} games scanned)");
                     }
                 }

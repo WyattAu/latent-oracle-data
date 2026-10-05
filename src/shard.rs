@@ -40,7 +40,7 @@ impl Default for Record {
 
 impl Record {
     pub fn piece_at(&self, sq: usize) -> u8 {
-        if sq % 2 == 0 {
+        if sq.is_multiple_of(2) {
             self.board[sq / 2] & 0x0F
         } else {
             self.board[sq / 2] >> 4
@@ -48,7 +48,7 @@ impl Record {
     }
 
     pub fn set_piece(&mut self, sq: usize, code: u8) {
-        if sq % 2 == 0 {
+        if sq.is_multiple_of(2) {
             self.board[sq / 2] = (self.board[sq / 2] & 0xF0) | (code & 0x0F);
         } else {
             self.board[sq / 2] = (self.board[sq / 2] & 0x0F) | (code << 4);
@@ -83,10 +83,12 @@ impl Record {
     }
 
     pub fn decode(b: &[u8; RECORD_SIZE]) -> Record {
-        let mut r = Record::default();
-        r.side = b[0];
-        r.castling = b[1];
-        r.ep = b[2];
+        let mut r = Record {
+            side: b[0],
+            castling: b[1],
+            ep: b[2],
+            ..Default::default()
+        };
         r.halfmove = b[3];
         r.fullmove = u16::from_le_bytes([b[4], b[5]]);
         r.n_targets = b[6];
@@ -154,7 +156,7 @@ impl<W: Write + io::Seek> ShardWriter<W> {
     /// Seek back and patch the record count (header is fixed-size).
     pub fn finalize(mut self) -> io::Result<u64> {
         self.inner.flush()?;
-        let end = self.inner.seek(io::SeekFrom::Current(0))?;
+        let end = self.inner.stream_position()?;
         let mut w = self.inner;
         w.seek(io::SeekFrom::Start(8))?;
         w.write_all(&self.count.to_le_bytes())?;
@@ -204,9 +206,11 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let mut r = Record::default();
-        r.side = 1;
-        r.castling = 0b1010;
+        let mut r = Record {
+            side: 1,
+            castling: 0b1010,
+            ..Default::default()
+        };
         r.set_piece(0, 6); // white king a1
         r.set_piece(63, 14); // black king h8
         r.n_targets = 1;

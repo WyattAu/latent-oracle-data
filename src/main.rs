@@ -47,10 +47,7 @@ fn main() {
             let path = req(&kv, "--in");
             info(&path)
         }
-        _ => {
-            usage();
-            Ok(())
-        }
+        _ => usage(),
     };
     if let Err(e) = result {
         eprintln!("error: {e}");

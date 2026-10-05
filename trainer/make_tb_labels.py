@@ -20,16 +20,72 @@ from format import iter_records  # noqa: E402
 from make_puzzles import codes_to_board  # noqa: E402
 
 
+
+def _gate(tb, args, want: int) -> list:
+    """Probe a small slice and assert the invariants a bulk run depends on:
+    WDL in range, DTZ present for decisive positions, the chosen best move
+    legal, and the row schema consumable by the trainer."""
+    import json as _json
+    rows, probed = [], 0
+    for idx, s in enumerate(iter_records(args.shard)):
+        pc = sum(1 for c in s.board_codes if c)
+        if not (1 <= pc <= 5):
+            continue
+        board = codes_to_board(s.board_codes, s.side)
+        if board.is_game_over():
+            continue
+        probed += 1
+        try:
+            wdl = tb.probe_wdl(board)
+            dtz = tb.probe_dtz(board)
+        except (chess.syzygy.MissingTableError, KeyError):
+            continue
+        if wdl is None:
+            continue
+        assert wdl in (-2, -1, 0, 1, 2), f"wdl out of range: {wdl}"
+        assert chess.popcount(board.occupied) == pc, (
+            f"record {idx}: piece count {pc} != board {chess.popcount(board.occupied)}")
+        assert dtz is not None or wdl == 0, (
+            f"record {idx}: decisive wdl {wdl} with no dtz")
+        legal = {m.uci() for m in board.legal_moves}
+        assert legal, f"record {idx}: no legal moves in a non-terminal position"
+        rows.append({"idx": idx, "wdl": int(wdl),
+                     "dtz": int(dtz) if dtz is not None else None,
+                     "best": sorted(legal)[0], "npieces": pc})
+        _json.dumps(rows[-1])  # schema must serialize
+        if len(rows) >= want:
+            break
+    assert rows, (
+        f"TB gate found no probeable positions in the first pass over "
+        f"{args.shard} (syzygy dir={args.tb}); is the tablebase mount present?")
+    return rows
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shard", required=True)
     ap.add_argument("--tb", default="/home/wyatt/data/syzygy")
     ap.add_argument("--out", required=True, help="sidecar .jsonl")
     ap.add_argument("--max-records", type=int, default=0, help="0 = all")
+    ap.add_argument("--gate-only", action="store_true",
+                    help="run the slice validation and exit")
+    ap.add_argument("--gate-size", type=int, default=200,
+                    help="positions to validate before the bulk scan")
     args = ap.parse_args()
 
     tb = chess.syzygy.open_tablebase(args.tb)
-    out = open(args.out, "w")
+
+    # Standing policy (2026-10-05): validate a small slice BEFORE committing to
+    # a full-shard probe. Every bulk builder in this repo does this; the TB
+    # sidecar was the last one missing it.
+    if args.gate_only or args.gate_size:
+        rows = _gate(tb, args, int(args.gate_size or 200))
+        print(f"TB gate PASSED ({len(rows)} probed positions)")
+        if args.gate_only:
+            return
+
+    tmp_out = args.out + f".tmp-{os.getpid()}"
+    out = open(tmp_out, "w")
     n = probed = labeled = 0
     for idx, s in enumerate(iter_records(args.shard)):
         n += 1
@@ -77,6 +133,8 @@ def main():
         }) + "\n")
         labeled += 1
     out.close()
+    # atomic: an interrupted bulk run must never leave a half-written sidecar
+    os.replace(tmp_out, args.out)
     print(f"done: scanned {n}, probed {probed}, labeled {labeled} -> {args.out}")
 
 
