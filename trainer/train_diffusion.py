@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from format import iter_records  # noqa: E402
 from make_puzzles import codes_to_board  # noqa: E402
 from model import Block  # noqa: E402
+from robust_io import load_artifact, save_atomic  # atomic + self-healing artifacts
 
 SPECIALS = {"PAD": 0, "MASK": 1, "SEP": 2}
 BOARD_CHARS = [".", "P", "N", "B", "R", "Q", "K", "p", "n", "b", "r", "q", "k"]
@@ -79,7 +80,13 @@ def encode_state(board_codes: np.ndarray, side: int, castling: int, ep: int) -> 
         toks.append(VOCAB[CODE_TO_CHAR.get(int(code), ".")])
     toks.append(VOCAB[SIDE_CHARS[side]])
     toks.append(VOCAB[CASTLE_CHARS[castling & 15]])
-    toks.append(VOCAB[EP_CHARS[0] if ep >= 8 else EP_CHARS[1 + ep]])
+    # EP token carries the FILE only; the rank is implied by side-to-move
+    # (white to move => EP square on rank 6). Legal EP squares live on rank 3
+    # (idx 16-23) or rank 6 (idx 40-47); everything else (incl. 255=none) is
+    # "-". The old `ep >= 8` test collapsed every real EP square to "-",
+    # silently dropping the field (found 2026-10-05).
+    ep_legal = 16 <= ep <= 23 or 40 <= ep <= 47
+    toks.append(VOCAB[EP_CHARS[1 + ep % 8] if ep_legal else EP_CHARS[0]])
     while len(toks) < STATE_LEN:
         toks.append(PAD)
     return toks[:STATE_LEN]
@@ -95,7 +102,7 @@ def find_connecting_move(prev_codes: np.ndarray, prev_side: int, prev_castle: in
                          next_codes: np.ndarray, next_side: int):
     """Legal move m s.t. apply(prev, m) == next (piece placement + side)."""
     import chess
-    board = codes_to_board(prev_codes, prev_side)
+    board = codes_to_board(prev_codes, prev_side, prev_castle, prev_ep)
     if board.is_game_over():
         return None
     want_side = chess.WHITE if next_side == 0 else chess.BLACK
@@ -141,6 +148,17 @@ class DiffuNet(nn.Module):
         return self.head(self.ln_f(x))  # (B, T, V)
 
 
+def _rss_gb() -> float:
+    try:
+        with open("/proc/self/status") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 2**20
+    except OSError:
+        pass
+    return 0.0
+
+
 def _validate_sample_slice(samples: list, V: int, expected_len: int, device: str,
                            model: torch.nn.Module | None = None) -> None:
     """Fail-fast validation of a small sample slice BEFORE bulk builds
@@ -154,27 +172,84 @@ def _validate_sample_slice(samples: list, V: int, expected_len: int, device: str
     assert 0 <= mn and mx < V, f"token ids out of range: [{mn}, {mx}] V={V}"
     # decode round-trip: source state must decode to a sane chess position
     inv = {v: k for k, v in VOCAB.items()}
+    # layout: [SEP] + state(64 board + side + castling + ep) + [SEP] + ...
     for s in samples[:3]:
-        board_chars = [inv[t] for t in s[2:2 + 64]]
+        board_chars = [inv[t] for t in s[1:1 + 64]]
         n_white = sum(1 for c in board_chars if c in "PNBRQK")
         n_black = sum(1 for c in board_chars if c in "pnbrqk")
         assert n_white >= 1 and n_black >= 1, f"decoded board lacks pieces: {board_chars}"
         assert board_chars.count("K") == 1 and board_chars.count("k") == 1, \
             "decoded board must have exactly one king per side"
+        side_tok, castle_tok, ep_tok = inv[s[65]], inv[s[66]], inv[s[67]]
+        assert side_tok in SIDE_CHARS, f"side token {side_tok!r} not a side char"
+        assert castle_tok in CASTLE_CHARS, f"castling token {castle_tok!r} not C0..C15"
+        assert ep_tok in EP_CHARS, f"ep token {ep_tok!r} not -/Ea..Eh"
+        # EP invariant: a non-"-" EP token must imply a LEGAL ep square for the
+        # side to move (rank 6 if white, rank 3 if black) and must survive the
+        # file mapping. This is exactly what the `ep >= 8` bug violated.
+        if ep_tok != EP_CHARS[0]:
+            file_i = ord(ep_tok[1]) - ord("a")
+            implied = (5 if side_tok == SIDE_CHARS[0] else 2) * 8 + file_i
+            assert 16 <= implied <= 23 or 40 <= implied <= 47, (
+                f"EP token {ep_tok!r} with side {side_tok!r} implies illegal "
+                f"ep square {implied}")
+            assert EP_CHARS[1 + implied % 8] == ep_tok, (
+                f"EP token {ep_tok!r} does not round-trip through the file map")
     if model is not None:
-        ids = torch.tensor(samples[:8], dtype=torch.long, device=device)
+        ids = torch.from_numpy(np.ascontiguousarray(
+            np.asarray(samples[:8], dtype=np.int64))).to(device)
         loss = diffu_loss(model, ids, 1 + STATE_LEN + 1, T=16, device=device)
         assert torch.isfinite(loss), f"training step on real samples is not finite: {loss}"
     print(f"sample slice validation PASSED ({len(samples)} samples, "
           f"ids [{mn}, {mx}], len {expected_len})", flush=True)
 
 
+class _SampleStore:
+    """Chunked int16 store for sample token rows.
+
+    Python lists cost ~7.4 KB per 205-token sample (ints > 256 are not
+    interned), so 2M samples needed ~13 GB and the 2026-10-05 run was
+    OOM-killed on a shared box. int16 rows (vocab < 32767) cost 410 B:
+    2M x 205 x 2 = 820 MB.
+    """
+
+    def __init__(self, width: int, chunk: int = 50_000):
+        self.width = width
+        self.chunk = chunk
+        self.chunks: list = []
+        self.buf = np.zeros((chunk, width), dtype=np.int16)
+        self.n = 0
+
+    def add(self, toks) -> None:
+        self.buf[self.n] = toks
+        self.n += 1
+        if self.n == self.chunk:
+            self.chunks.append(self.buf)
+            self.buf = np.zeros((self.chunk, self.width), dtype=np.int16)
+            self.n = 0
+
+    def peek(self, k: int):
+        return self.chunks[0][:k] if self.chunks else self.buf[:min(k, self.n)]
+
+    def __len__(self) -> int:
+        return len(self.chunks) * self.chunk + self.n
+
+    def finish(self, seed: int | None = None):
+        if self.n:
+            self.chunks.append(self.buf[:self.n])
+        out = self.chunks[0] if len(self.chunks) == 1 else np.concatenate(self.chunks, axis=0)
+        self.chunks = []
+        if seed is not None:
+            out = out[np.random.default_rng(seed).permutation(len(out))]
+        return out
+
+
 def build_samples(shard: str, horizon: int, max_samples: int, seed: int = 0,
                   model: torch.nn.Module | None = None, device: str = "cpu"):
     """Consecutive-record windows -> (source, targets) token lists.
     Validates a ~2000-sample slice before committing to the full scan."""
-    rng = random.Random(seed)
-    samples = []
+    expected = 2 + STATE_LEN + horizon * (1 + STATE_LEN)
+    store = _SampleStore(expected)
     prev = None  # (codes, side, castling, ep)
     run: list = []  # list of records in the current consecutive run
     n_scanned = 0
@@ -182,7 +257,9 @@ def build_samples(shard: str, horizon: int, max_samples: int, seed: int = 0,
     for s in iter_records(shard):
         n_scanned += 1
         if n_scanned % 200000 == 0:
-            print(f"  scan {n_scanned}: {len(samples)} samples", flush=True)
+            rss = _rss_gb()
+            print(f"  scan {n_scanned}: {len(store)} samples (rss {rss:.2f} GB)",
+                  flush=True)
         cur = state_from_record(s)
         if prev is not None:
             mv = find_connecting_move(*prev, cur[0], cur[1])
@@ -198,16 +275,18 @@ def build_samples(shard: str, horizon: int, max_samples: int, seed: int = 0,
             for _, mv, nxt in window:
                 toks.append(move_token(*mv))
                 toks += encode_state(*nxt)
-            samples.append(toks)
+            store.add(toks)
             run = run[-(horizon - 1):] if horizon > 1 else []
-        if not validated and len(samples) >= min(2000, max_samples or 2000):
+        if not validated and len(store) >= min(2000, max_samples or 2000):
             # fail fast: token sanity + decode round-trip + one real step
             expected = 2 + STATE_LEN + horizon * (1 + STATE_LEN)
-            _validate_sample_slice(samples, V, expected, device, model)
+            _validate_sample_slice(list(store.peek(3)), V, expected, device, model)
             validated = True
-        if max_samples and len(samples) >= max_samples:
+        if max_samples and len(store) >= max_samples:
             break
-    rng.shuffle(samples)
+    samples = store.finish(seed=seed)
+    print(f"  sample store: {samples.shape} {samples.dtype} "
+          f"({samples.nbytes / 2**30:.2f} GB)", flush=True)
     return samples
 
 
@@ -259,7 +338,7 @@ def main():
     cache = args.out + f"_h{args.horizon}_samples.pt"
     os.makedirs(args.out, exist_ok=True)
     if os.path.exists(cache):
-        samples = torch.load(cache, weights_only=False)
+        samples = load_artifact(cache)
         print(f"loaded {len(samples)} cached samples", flush=True)
     else:
         print("building samples from shard pairs (this scans the shard)...", flush=True)
@@ -267,7 +346,7 @@ def main():
                                max_len=2 + STATE_LEN + args.horizon * (1 + STATE_LEN)).to(device)
         samples = build_samples(args.shard, args.horizon, args.max_samples,
                                 model=model_probe, device=device)
-        torch.save(samples, cache)
+        save_atomic(samples, cache)
         print(f"built {len(samples)} samples -> {cache}", flush=True)
 
     hold = samples[:args.holdout]
@@ -283,7 +362,7 @@ def main():
         with torch.no_grad():
             for i in range(0, len(hold), 64):
                 chunk = hold[i:i + 64]
-                ids = torch.tensor(chunk, dtype=torch.long, device=device)
+                ids = torch.from_numpy(np.ascontiguousarray(chunk, dtype=np.int64)).to(device)
                 a0_pos = src_len  # first action token position
                 # single full reveal: measure a0 accuracy from a 50%-masked pass
                 t = torch.full((len(chunk),), args.T // 2 - 1, device=device)
@@ -304,7 +383,7 @@ def main():
         done = 0
         for i in range(0, len(train) - args.batch, args.batch):
             idx = order[i:i + args.batch]
-            batch = torch.tensor([train[j] for j in idx], dtype=torch.long, device=device)
+            batch = torch.from_numpy(train[idx.numpy()].astype(np.int64)).to(device)
             loss = diffu_loss(model, batch, src_len, args.T, device)
             opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -325,7 +404,7 @@ def main():
         cfg = dict(d=args.d, layers=args.layers, heads=args.heads, dff=args.dff,
                    max_len=max_len, horizon=args.horizon, T=args.T)
         json.dump(cfg, open(os.path.join(args.out, "config.json"), "w"))
-        torch.save(model.state_dict(), os.path.join(args.out, f"diffu_e{epoch}.pt"))
+        save_atomic(model.state_dict(), os.path.join(args.out, f"diffu_e{epoch}.pt"))
     print("done", flush=True)
 
 

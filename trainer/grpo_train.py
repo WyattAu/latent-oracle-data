@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from format import iter_records  # noqa: E402
 from make_puzzles import codes_to_board  # noqa: E402
 from model import ChessNet  # noqa: E402
+from robust_io import load_artifact, save_atomic  # atomic + self-healing artifacts
 
 
 class SFEval:
@@ -119,7 +120,7 @@ def main():
     rng = random.Random(0)
 
     model = ChessNet(v3=args.v3).to(device)
-    model.load_state_dict(torch.load(args.net, map_location="cpu", weights_only=True))
+    model.load_state_dict(load_artifact(args.net, weights_only=True))
     base = ChessNet(v3=args.v3).to(device)
     base.load_state_dict(model.state_dict())
     for p in base.parameters():
@@ -274,7 +275,7 @@ def main():
             print(f"step {step}: pg {pg.item():.4f} kl {kl.item():.4f} "
                   f"r_mean {rewards.mean().item():.3f}", flush=True)
         if step % args.export_every == 0 or step == args.steps:
-            torch.save(model.state_dict(), os.path.join(args.out, f"grpo_s{step}.pt"))
+            save_atomic(model.state_dict(), os.path.join(args.out, f"grpo_s{step}.pt"))
             model.export_blob(os.path.join(args.out, f"grpo_s{step}.bin"))
             print(f"exported {args.out}/grpo_s{step}.pt/.bin", flush=True)
 

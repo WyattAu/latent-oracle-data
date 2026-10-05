@@ -46,6 +46,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from format import iter_records  # noqa: E402
 from model import ChessNet, load_v1_into_v3  # noqa: E402
+from robust_io import load_artifact
 
 BLOB_MAGIC = 0x57514F4C  # "LOQW" LE
 VER_1, VER_2_GAB, VER_3 = 1, 2, 3
@@ -135,7 +136,7 @@ def main():
     torch.manual_seed(0)
     model = ChessNet(args.d, args.layers, args.heads, args.dff, args.dpol,
                      gab=args.gab or args.v3, v3=args.v3).eval()
-    sd = torch.load(args.net, map_location="cpu", weights_only=True)
+    sd = load_artifact(args.net, weights_only=True)
     if args.v3 and args.warm_v1:
         load_v1_into_v3(model, sd)
     else:

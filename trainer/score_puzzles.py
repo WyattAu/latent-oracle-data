@@ -13,6 +13,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from make_puzzles import codes_to_board  # noqa: E402
 from model import ChessNet  # noqa: E402
+from robust_io import load_artifact
 
 
 def fen_to_codes(fen: str) -> tuple[np.ndarray, int]:
@@ -38,7 +39,7 @@ def main():
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = ChessNet(gab=args.gab).to(device)
-    sd = torch.load(args.net, map_location="cpu", weights_only=True)
+    sd = load_artifact(args.net, weights_only=True)
     model.load_state_dict(sd, strict=False)
     model.eval()
 

@@ -17,6 +17,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from model import ChessNet  # noqa: E402
+from robust_io import load_artifact
 
 
 def outcome_for(color: chess.Color, result: str) -> float:
@@ -52,7 +53,7 @@ def main():
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = ChessNet().to(device)
-    model.load_state_dict(torch.load(args.net, map_location="cpu", weights_only=True))
+    model.load_state_dict(load_artifact(args.net, weights_only=True))
     model.eval()
 
     rows = []  # (surprise, game_index, fen, pwin, realized)

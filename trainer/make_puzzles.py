@@ -19,7 +19,17 @@ PIECE_TO_PC = {1: ("P", 0), 2: ("N", 0), 3: ("B", 0), 4: ("R", 0), 5: ("Q", 0), 
                9: ("P", 1), 10: ("N", 1), 11: ("B", 1), 12: ("R", 1), 13: ("Q", 1), 14: ("K", 1)}
 
 
-def codes_to_board(codes: np.ndarray, side: int):
+# castling bitmask convention (shard + engine types.hpp CR_*): WK=1, WQ=2, BK=4, BQ=8
+CASTLE_FEN = [("K" if m & 1 else "") + ("Q" if m & 2 else "")
+              + ("k" if m & 4 else "") + ("q" if m & 8 else "") for m in range(16)]
+NO_EP = 255
+
+
+def codes_to_board(codes: np.ndarray, side: int, castling: int = 0, ep: int = NO_EP):
+    """Reconstruct a full chess position. castling (4-bit mask) and ep
+    (square index, 255=none) MUST be passed for move generation to match the
+    engine: without them castling/en-passant moves are absent from
+    legal_moves, which silently breaks sample runs (found 2026-10-05)."""
     import chess
     board = chess.Board(None)
     for sq, code in enumerate(codes):
@@ -27,6 +37,11 @@ def codes_to_board(codes: np.ndarray, side: int):
             letter, color = PIECE_TO_PC[code]
             board.set_piece_at(sq, chess.Piece.from_symbol(letter if color == 0 else letter.lower()))
     board.turn = chess.WHITE if side == 0 else chess.BLACK
+    fen_castle = CASTLE_FEN[castling & 15]
+    if fen_castle:
+        board.set_castling_fen(fen_castle)
+    if ep != NO_EP:
+        board.ep_square = ep
     return board
 
 

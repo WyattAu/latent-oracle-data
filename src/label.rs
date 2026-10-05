@@ -23,6 +23,9 @@ pub struct LabelArgs {
     /// they are written through unchanged. Enables free 1M -> 5M continuation.
     pub resume: bool,
     pub hash_mb: u32,
+    /// Records per durable batch: the granularity of crash progress. A kill
+    /// costs at most this many records of work.
+    pub batch_records: usize,
 }
 
 struct Patch {
@@ -206,47 +209,22 @@ fn analyze_record(
     })
 }
 
-pub fn run(args: &LabelArgs) -> Result<(), String> {
-    let file = std::fs::File::open(&args.input).map_err(|e| e.to_string())?;
-    let mut reader: ShardReader<std::fs::File> = ShardReader::open(file).map_err(|e| e.to_string())?;
-    let mut records: Vec<Record> = Vec::new();
-    while records.len() < args.max_records as usize {
-        match reader.next_record().map_err(|e| e.to_string())? {
-            Some(r) => records.push(r),
-            None => break,
-        }
-    }
-    eprintln!("label: {} records loaded", records.len());
-
+/// Records per durable batch. Each batch is written + flushed, so a crash
+/// (OOM, reboot) costs at most one batch instead of the whole run.
+fn analyze_batch(args: &LabelArgs, batch: &[Record], base: u64) -> HashMap<usize, Patch> {
     let next = AtomicU64::new(0);
-    let done = AtomicU64::new(0);
-    let started = Instant::now();
-    let merged: Mutex<HashMap<u64, Patch>> = Mutex::new(HashMap::new());
+    let merged: Mutex<HashMap<usize, Patch>> = Mutex::new(HashMap::new());
     let failures = AtomicU64::new(0);
-    let target = (args.max_records as u64).min(records.len() as u64);
-
     std::thread::scope(|scope| {
         for _ in 0..args.threads {
             scope.spawn(|| loop {
-                let i = next.fetch_add(1, Ordering::Relaxed);
-                if i as usize >= records.len() {
+                let i = next.fetch_add(1, Ordering::Relaxed) as usize;
+                if i >= batch.len() {
                     break;
                 }
-                if args.resume && records[i as usize].n_targets >= 2 {
+                if args.resume && batch[i].n_targets >= 2 {
                     continue; // already labeled by a previous pass
                 }
-                let d = done.fetch_add(1, Ordering::Relaxed) + 1;
-                if d % 50_000 == 0 {
-                    let secs = started.elapsed().as_secs().max(1);
-                    let rate = d / secs;
-                    let eta_min = (target - d).saturating_mul(1) / rate.max(1) / 60;
-                    eprintln!(
-                        "label: {d}/{target} done, {} pos/s, ETA ~{eta_min} min",
-                        d / secs
-                    );
-                }
-                // Thread-local engine is created lazily inside the closure
-                // via thread_local! below.
                 ENG.with(|eng| {
                     let mut slot = eng.borrow_mut();
                     if slot.is_none() {
@@ -256,44 +234,131 @@ pub fn run(args: &LabelArgs) -> Result<(), String> {
                         failures.fetch_add(1, Ordering::Relaxed);
                         return;
                     };
-                    match analyze_record(e, i, &records[i as usize], args.depth, args.multipv) {
-                        Ok(p) => merged.lock().unwrap().insert(i, p),
+                    match analyze_record(e, (base + i as u64) as u64, &batch[i], args.depth, args.multipv) {
+                        Ok(p) => {
+                            merged.lock().unwrap().insert(i, p);
+                        }
                         Err(_) => {
                             // engine desynced: respawn and skip the record
                             failures.fetch_add(1, Ordering::Relaxed);
                             *slot = None;
-                            None
                         }
                     };
                 });
             });
         }
     });
+    if failures.load(Ordering::Relaxed) > 0 {
+        eprintln!(
+            "label: warning — {} records failed analysis in batch at {base}",
+            failures.load(Ordering::Relaxed)
+        );
+    }
+    merged.into_inner().unwrap()
+}
 
-    let failures = failures.load(Ordering::Relaxed);
-    if failures > 0 {
-        eprintln!("label: warning — {failures} records failed analysis");
+pub fn run(args: &LabelArgs) -> Result<(), String> {
+    let file = std::fs::File::open(&args.input).map_err(|e| e.to_string())?;
+    let mut reader: ShardReader<std::fs::File> =
+        ShardReader::open(file).map_err(|e| e.to_string())?;
+
+    // Resume: a partially written output is a valid prefix of the input, so
+    // the durable record count is derivable from its size.
+    let out_path = std::path::Path::new(&args.output);
+    let mut start_rec: u64 = 0;
+    let mut writer = if out_path.exists() && args.resume {
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(out_path)
+            .map_err(|e| e.to_string())?;
+        let size = f.metadata().map_err(|e| e.to_string())?.len();
+        let have = size.saturating_sub(crate::shard::HEADER_SIZE as u64)
+            / crate::shard::RECORD_SIZE as u64;
+        // drop any torn trailing record
+        let good = crate::shard::HEADER_SIZE as u64 + have * crate::shard::RECORD_SIZE as u64;
+        if good != size {
+            eprintln!("label: trimming torn tail {size} -> {good} bytes");
+        }
+        f.set_len(good).map_err(|e| e.to_string())?;
+        start_rec = have;
+        ShardWriter::with_count(BufWriter::with_capacity(1 << 20, f), have)
+            .map_err(|e| e.to_string())?
+    } else {
+        ShardWriter::create(BufWriter::with_capacity(
+            1 << 20,
+            std::fs::File::create(out_path).map_err(|e| e.to_string())?,
+        ))
+        .map_err(|e| e.to_string())?
+    };
+    if start_rec > 0 {
+        eprintln!("label: resuming at record {start_rec} ({} already durable)", start_rec);
     }
 
-    let out_file = std::fs::File::create(&args.output).map_err(|e| e.to_string())?;
-    let mut writer =
-        ShardWriter::create(BufWriter::with_capacity(1 << 20, out_file)).map_err(|e| e.to_string())?;
-    let patches = merged.into_inner().unwrap();
-    for (i, r) in records.iter().enumerate() {
-        let r = match patches.get(&(i as u64)) {
-            Some(p) => {
-                let mut r = r.clone();
-                r.eval_cp = p.eval_cp;
-                r.targets = p.targets;
-                r.n_targets = p.n_targets;
-                r
-            }
-            None => r.clone(),
+    // skip the records already written
+    let mut skipped = 0u64;
+    while skipped < start_rec {
+        match reader.next_record().map_err(|e| e.to_string())? {
+            Some(_) => skipped += 1,
+            None => break,
+        }
+    }
+
+    let started = Instant::now();
+    let mut processed: u64 = 0;
+    let target = args.max_records.saturating_sub(start_rec);
+    let mut batch: Vec<Record> = Vec::with_capacity(args.batch_records.max(1));
+
+    loop {
+        batch.clear();
+        let batch_cap = args.batch_records.max(1);
+        let want = if args.max_records > 0 {
+            (args.max_records - (start_rec + processed)).min(batch_cap as u64) as usize
+        } else {
+            batch_cap
         };
-        writer.write(&r).map_err(|e| e.to_string())?;
+        if want == 0 {
+            break;
+        }
+        while batch.len() < want {
+            match reader.next_record().map_err(|e| e.to_string())? {
+                Some(r) => batch.push(r),
+                None => break,
+            }
+        }
+        if batch.is_empty() {
+            break;
+        }
+        let patches = analyze_batch(args, &batch, start_rec + processed);
+        for (i, r) in batch.iter().enumerate() {
+            let out = match patches.get(&i) {
+                Some(p) => {
+                    let mut r = r.clone();
+                    r.eval_cp = p.eval_cp;
+                    r.targets = p.targets;
+                    r.n_targets = p.n_targets;
+                    r
+                }
+                None => r.clone(),
+            };
+            writer.write(&out).map_err(|e| e.to_string())?;
+        }
+        writer.flush().map_err(|e| e.to_string())?;
+        processed += batch.len() as u64;
+        let secs = started.elapsed().as_secs().max(1);
+        let rate = processed / secs;
+        let eta_min = target.saturating_sub(processed) / rate.max(1) / 60;
+        eprintln!(
+            "label: {}/{target} done ({} durable), {} pos/s, ETA ~{} min",
+            processed, writer.count(), rate, eta_min
+        );
+        if args.max_records > 0 && start_rec + processed >= args.max_records {
+            break;
+        }
     }
-    writer.finalize().map_err(|e| e.to_string())?;
-    eprintln!("label: {} patched -> {}", patches.len(), args.output);
+
+    let total = writer.finalize().map_err(|e| e.to_string())?;
+    eprintln!("label: {} records -> {}", total, args.output);
     Ok(())
 }
 

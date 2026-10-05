@@ -18,6 +18,7 @@ import torch.nn.functional as F
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import train_diffusion as td  # noqa: E402
 from train_diffusion import (  # noqa: E402
+from robust_io import load_artifact
     MASK,
     MOVE_BASE,
     STATE_LEN,
@@ -117,13 +118,12 @@ def main():
         cands = glob.glob(args.run.rstrip("/") + "_*_samples.pt")
         cache = cands[0] if cands else None
     assert cache, "samples cache not found"
-    samples = torch.load(cache, weights_only=False)
+    samples = load_artifact(cache, weights_only=True)
     import json
     cfg = json.load(open(os.path.join(args.run, "config.json")))
     model = DiffuNet(cfg["d"], cfg["layers"], cfg["heads"], cfg["dff"],
                      max_len=cfg["max_len"]).to(device)
-    model.load_state_dict(torch.load(os.path.join(args.run, args.ckpt),
-                                     map_location=device, weights_only=True))
+load_artifact(os.path.join(args.run, args.ckpt), weights_only=True))
     model.eval()
     src_len = 1 + STATE_LEN + 1
     hits = gate_hits = n = 0

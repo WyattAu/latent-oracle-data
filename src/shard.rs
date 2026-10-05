@@ -122,10 +122,33 @@ impl<W: Write + io::Seek> ShardWriter<W> {
         Ok(ShardWriter { inner, count: 0 })
     }
 
+    /// Open an existing shard for append: writes the header with `count`
+    /// already set and positions at the end, so `finalize` patches the true
+    /// total. Used by `label` to resume after a crash (2026-10-05: an OOM
+    /// kill at 3.9M/4M records lost 17 h because output was written only at
+    /// the end).
+    pub fn with_count(mut inner: W, count: u64) -> io::Result<Self> {
+        inner.write_all(&MAGIC.to_le_bytes())?;
+        inner.write_all(&VERSION.to_le_bytes())?;
+        inner.write_all(&(HEADER_SIZE as u16).to_le_bytes())?;
+        inner.write_all(&count.to_le_bytes())?;
+        inner.seek(io::SeekFrom::Start(HEADER_SIZE as u64 + count * RECORD_SIZE as u64))?;
+        Ok(ShardWriter { inner, count })
+    }
+
     pub fn write(&mut self, r: &Record) -> io::Result<()> {
         self.inner.write_all(&r.encode())?;
         self.count += 1;
         Ok(())
+    }
+
+    /// Push buffered bytes to the OS so a crash cannot lose a whole batch.
+    pub fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+
+    pub fn count(&self) -> u64 {
+        self.count
     }
 
     /// Seek back and patch the record count (header is fixed-size).

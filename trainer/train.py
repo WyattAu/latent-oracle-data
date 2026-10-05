@@ -22,6 +22,7 @@ import torch.nn.functional as F
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from format import MaskSidecar, count_records, iter_records  # noqa: E402
 from model import ChessNet, load_v1_into_v3  # noqa: E402
+from robust_io import load_artifact, save_atomic  # atomic + self-healing artifacts
 
 PIECE_TO_PC = {1: ("P", 0), 2: ("N", 0), 3: ("B", 0), 4: ("R", 0), 5: ("Q", 0), 6: ("K", 0),
                9: ("P", 1), 10: ("N", 1), 11: ("B", 1), 12: ("R", 1), 13: ("Q", 1), 14: ("K", 1)}
@@ -243,7 +244,7 @@ def main():
     model = ChessNet(args.d, args.layers, args.heads, args.dff, args.dpol,
                      gab=args.gab or args.v3, v3=args.v3).to(device)
     if args.init_from and os.path.exists(args.init_from):
-        sd = torch.load(args.init_from, map_location="cpu", weights_only=True)
+        sd = load_artifact(args.init_from, weights_only=True)
         missing = None
         if args.v3 and "V2.weight" in sd and sd["V2.weight"].shape[0] == 3:
             load_v1_into_v3(model, sd)
@@ -425,7 +426,7 @@ def main():
             if done >= total:
                 break
         model.export_blob(os.path.join(args.out, f"net_e{epoch}.bin"))
-        torch.save(model.state_dict(), os.path.join(args.out, f"net_e{epoch}.pt"))
+        save_atomic(model.state_dict(), os.path.join(args.out, f"net_e{epoch}.pt"))
         print(f"epoch {epoch}: exported {args.out}/net_e{epoch}.bin", flush=True)
         # EMA export: swap in shadow weights, export, restore raw weights.
         if ema_params is not None:
@@ -433,7 +434,7 @@ def main():
             ema_sd = {k: e.clone() for k, e in zip(raw_sd.keys(), ema_params)}
             model.load_state_dict(ema_sd)
             model.export_blob(os.path.join(args.out, f"net_e{epoch}_ema.bin"))
-            torch.save(ema_sd, os.path.join(args.out, f"net_e{epoch}_ema.pt"))
+            save_atomic(ema_sd, os.path.join(args.out, f"net_e{epoch}_ema.pt"))
             model.load_state_dict(raw_sd)
             print(f"epoch {epoch}: exported {args.out}/net_e{epoch}_ema.bin", flush=True)
 

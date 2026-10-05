@@ -32,6 +32,7 @@ fn main() {
             max_records: opt(&kv, "--max-records", 5_000_000),
             resume: kv.contains_key("--resume"),
             hash_mb: opt(&kv, "--hash", 64) as u32,
+            batch_records: opt(&kv, "--batch-records", 50_000) as usize,
         }),
         "masks" => masks::run(&masks::MasksArgs {
             input: req(&kv, "--in"),

@@ -21,6 +21,7 @@ import torch.nn.functional as F
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from format import iter_records  # noqa: E402
 from model import ChessNet  # noqa: E402
+from robust_io import load_artifact, save_atomic  # atomic + self-healing artifacts
 
 SYM2CODE = {"P": 1, "N": 2, "B": 3, "R": 4, "Q": 5, "K": 6,
             "p": 9, "n": 10, "b": 11, "r": 12, "q": 13, "k": 14}
@@ -137,14 +138,14 @@ def main():
     pyrng = random.Random(0)
 
     model = ChessNet().to(device)
-    model.load_state_dict(torch.load(args.net, map_location="cpu", weights_only=True))
+    model.load_state_dict(load_artifact(args.net, weights_only=True))
     model.eval()
     print(f"loaded {args.net} on {device}", flush=True)
 
     cache = os.path.join(args.out, "amz_targets.pt")
     os.makedirs(args.out, exist_ok=True)
     if os.path.exists(cache):
-        samples = torch.load(cache, weights_only=False)
+        samples = load_artifact(cache, weights_only=True)
         print(f"loaded {len(samples)} cached target samples", flush=True)
     else:
         samples = []
@@ -166,7 +167,7 @@ def main():
                 print("target slice validation PASSED (50)", flush=True)
             if len(samples) % 20000 == 0:
                 print(f"  {len(samples)} positions targeted", flush=True)
-        torch.save(samples, cache)
+        save_atomic(samples, cache)
         print(f"AMZ targets for {len(samples)} positions -> {cache}", flush=True)
 
     # fine-tune: policy CE against the AMZ soft distribution (value loss kept
@@ -202,7 +203,7 @@ def main():
             if step % 25 == 0:
                 print(f"epoch {epoch} step {step}: amz_ce {loss.item():.4f} "
                       f"({done} positions)", flush=True)
-        torch.save(model.state_dict(), os.path.join(args.out, f"amz_e{epoch}.pt"))
+        save_atomic(model.state_dict(), os.path.join(args.out, f"amz_e{epoch}.pt"))
         print(f"epoch {epoch}: saved {args.out}/amz_e{epoch}.pt", flush=True)
     print("pilot done — evaluate with score_puzzles.py + fast SPRT", flush=True)
 
