@@ -98,6 +98,34 @@ def move_token(u: int, v: int, promo: int) -> int:
     return VOCAB[f"M_{u}_{v}"]
 
 
+
+def _board_fen(codes: np.ndarray) -> str:
+    """Piece-placement FEN string for a shard record's board codes.
+
+    Matches python-chess's `board_fen()` (uppercase white, run-length encoded
+    empties, no promoted markers) so a candidate move's position can be
+    compared with one string compare instead of 64 `piece_at` lookups.
+    Built once per record and amortized over every legal move.
+    """
+    out = []
+    for rank in range(7, -1, -1):
+        empty = 0
+        for file in range(8):
+            c = int(codes[rank * 8 + file])
+            if c == 0:
+                empty += 1
+                continue
+            if empty:
+                out.append(str(empty))
+                empty = 0
+            out.append(CODE_TO_CHAR[c])
+        if empty:
+            out.append(str(empty))
+        if rank:
+            out.append("/")
+    return "".join(out)
+
+
 def find_connecting_move(prev_codes: np.ndarray, prev_side: int, prev_castle: int, prev_ep: int,
                          next_codes: np.ndarray, next_side: int):
     """Legal move m s.t. apply(prev, m) == next (piece placement + side)."""
@@ -106,16 +134,47 @@ def find_connecting_move(prev_codes: np.ndarray, prev_side: int, prev_castle: in
     if board.is_game_over():
         return None
     want_side = chess.WHITE if next_side == 0 else chess.BLACK
+    target_fen = _board_fen(next_codes)
     for mv in board.legal_moves:
+        # Classify BEFORE pushing: is_en_passant/is_castling describe a move
+        # in the position it is played FROM.
+        is_ep = board.is_en_passant(mv)
+        is_castle = board.is_castling(mv)
         board.push(mv)
         ok = board.turn == want_side
         if ok:
-            for sq in range(64):
-                p = board.piece_at(sq)
-                code = 0 if p is None else SYM2CODE[p.symbol()]
-                if code != next_codes[sq]:
-                    ok = False
-                    break
+            # A move touches at most 4 squares (from, to, the en-passant
+            # victim, and both castling pieces), so scan those first as a cheap
+            # reject: comparing all 64 for every candidate made this function
+            # 94% of shard-scan time (261 rec/s -> 2.1 h for a 2M scan).
+            #
+            # The full sweep afterwards is REQUIRED, not redundant: for
+            # castling, the bare rook move h8->f8 agrees with O-O on h8/f8 and
+            # differs only on e8/g8, so a touched-only check accepts it wrongly.
+            touched = [mv.from_square, mv.to_square]
+            if is_ep:
+                # the captured pawn sits one rank behind the destination
+                touched.append(mv.to_square - 8
+                               if chess.square_rank(mv.to_square) == 5
+                               else mv.to_square + 8)
+            if is_castle:
+                rank = chess.square_rank(mv.from_square)
+                kside = chess.square_file(mv.to_square) > chess.square_file(mv.from_square)
+                touched.append(chess.square(7 if kside else 0, rank))
+                touched.append(chess.square(5 if kside else 3, rank))
+            if ok:
+                for sq in touched:
+                    p = board.piece_at(sq)
+                    code = 0 if p is None else SYM2CODE[p.symbol()]
+                    if code != next_codes[sq]:
+                        ok = False
+                        break
+            if ok and board.board_fen() != target_fen:
+                # Exact whole-board verification. Required, not redundant: for
+                # castling the bare rook move h8->f8 agrees with O-O on h8/f8
+                # and differs only on e8/g8, so any touched-only check accepts
+                # it wrongly.
+                ok = False
         board.pop()
         if ok:
             promo = 0
