@@ -159,6 +159,13 @@ def main():
                 continue
             samples.append((s.board_codes.astype(np.int64), s.side,
                             t["moves"], t["p"]))
+            if len(samples) == 50:
+                # fail-fast slice validation (standing policy)
+                for _, mv, p in samples[:50]:
+                    assert len(mv) == len(p) and len(p) >= 1, "target shape broken"
+                    assert all(0.0 <= x <= 1.0 for x in p), "probability out of range"
+                    assert abs(sum(p) - 1.0) < 1e-4, f"target not normalized: {sum(p)}"
+                print("target slice validation PASSED (50)", flush=True)
             if len(samples) % 20000 == 0:
                 print(f"  {len(samples)} positions targeted", flush=True)
         torch.save(samples, cache)

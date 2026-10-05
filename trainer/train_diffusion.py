@@ -141,13 +141,44 @@ class DiffuNet(nn.Module):
         return self.head(self.ln_f(x))  # (B, T, V)
 
 
-def build_samples(shard: str, horizon: int, max_samples: int, seed: int = 0):
-    """Consecutive-record windows -> (source, targets) token lists."""
+def _validate_sample_slice(samples: list, V: int, expected_len: int, device: str,
+                           model: torch.nn.Module | None = None) -> None:
+    """Fail-fast validation of a small sample slice BEFORE bulk builds
+    (standing policy after the 2026-10-05 tokenizer poisoning: shape, token
+    range, decode round-trip piece sanity, one finite training step)."""
+    assert samples, "no samples built"
+    bad_len = sum(1 for s in samples if len(s) != expected_len)
+    assert bad_len == 0, f"{bad_len}/{len(samples)} samples have wrong length (want {expected_len})"
+    mx = max(max(s) for s in samples)
+    mn = min(min(s) for s in samples)
+    assert 0 <= mn and mx < V, f"token ids out of range: [{mn}, {mx}] V={V}"
+    # decode round-trip: source state must decode to a sane chess position
+    inv = {v: k for k, v in VOCAB.items()}
+    for s in samples[:3]:
+        board_chars = [inv[t] for t in s[2:2 + 64]]
+        n_white = sum(1 for c in board_chars if c in "PNBRQK")
+        n_black = sum(1 for c in board_chars if c in "pnbrqk")
+        assert n_white >= 1 and n_black >= 1, f"decoded board lacks pieces: {board_chars}"
+        assert board_chars.count("K") == 1 and board_chars.count("k") == 1, \
+            "decoded board must have exactly one king per side"
+    if model is not None:
+        ids = torch.tensor(samples[:8], dtype=torch.long, device=device)
+        loss = diffu_loss(model, ids, 1 + STATE_LEN + 1, T=16, device=device)
+        assert torch.isfinite(loss), f"training step on real samples is not finite: {loss}"
+    print(f"sample slice validation PASSED ({len(samples)} samples, "
+          f"ids [{mn}, {mx}], len {expected_len})", flush=True)
+
+
+def build_samples(shard: str, horizon: int, max_samples: int, seed: int = 0,
+                  model: torch.nn.Module | None = None, device: str = "cpu"):
+    """Consecutive-record windows -> (source, targets) token lists.
+    Validates a ~2000-sample slice before committing to the full scan."""
     rng = random.Random(seed)
     samples = []
     prev = None  # (codes, side, castling, ep)
     run: list = []  # list of records in the current consecutive run
     n_scanned = 0
+    validated = False
     for s in iter_records(shard):
         n_scanned += 1
         if n_scanned % 200000 == 0:
@@ -164,12 +195,16 @@ def build_samples(shard: str, horizon: int, max_samples: int, seed: int = 0):
             window = run[-horizon:]
             src = window[0][0]
             toks = [SEP] + encode_state(*src) + [SEP]
-            ok = True
             for _, mv, nxt in window:
                 toks.append(move_token(*mv))
                 toks += encode_state(*nxt)
             samples.append(toks)
             run = run[-(horizon - 1):] if horizon > 1 else []
+        if not validated and len(samples) >= min(2000, max_samples or 2000):
+            # fail fast: token sanity + decode round-trip + one real step
+            expected = 2 + STATE_LEN + horizon * (1 + STATE_LEN)
+            _validate_sample_slice(samples, V, expected, device, model)
+            validated = True
         if max_samples and len(samples) >= max_samples:
             break
     rng.shuffle(samples)
@@ -228,7 +263,10 @@ def main():
         print(f"loaded {len(samples)} cached samples", flush=True)
     else:
         print("building samples from shard pairs (this scans the shard)...", flush=True)
-        samples = build_samples(args.shard, args.horizon, args.max_samples)
+        model_probe = DiffuNet(args.d, args.layers, args.heads, args.dff,
+                               max_len=2 + STATE_LEN + args.horizon * (1 + STATE_LEN)).to(device)
+        samples = build_samples(args.shard, args.horizon, args.max_samples,
+                                model=model_probe, device=device)
         torch.save(samples, cache)
         print(f"built {len(samples)} samples -> {cache}", flush=True)
 
