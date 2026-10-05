@@ -30,9 +30,13 @@ from make_puzzles import codes_to_board, PIECE_TO_PC  # noqa: E402
 
 SPECIALS = {"PAD": 0, "MASK": 1, "SEP": 2}
 BOARD_CHARS = [".", "P", "N", "B", "R", "Q", "K", "p", "n", "b", "r", "q", "k"]
+# shard piece-code -> BOARD_CHARS index (codes 9-14 are black; a direct index
+# was shifted by two — black pawns encoded as bishops, queens/kings empty)
+CODE_TO_CHAR = {0: ".", 1: "P", 2: "N", 3: "B", 4: "R", 5: "Q", 6: "K",
+                9: "p", 10: "n", 11: "b", 12: "r", 13: "q", 14: "k"}
 CASTLE_CHARS = [f"C{i}" for i in range(16)]  # castling-rights bitmask 0..15
 EP_CHARS = ["-"] + [f"E{f}" for f in "abcdefgh"]
-SIDE_CHARS = ["w", "b"]
+SIDE_CHARS = ["sw", "sb"]  # NOT "w"/"b": collides with piece chars in the shared vocab
 
 
 MOVE_BASE = (len(SPECIALS) + len(BOARD_CHARS) + len(CASTLE_CHARS) +
@@ -72,7 +76,7 @@ SYM2CODE = {"P": 1, "N": 2, "B": 3, "R": 4, "Q": 5, "K": 6,
 def encode_state(board_codes: np.ndarray, side: int, castling: int, ep: int) -> list[int]:
     toks = []
     for code in board_codes:
-        toks.append(VOCAB[BOARD_CHARS[code] if code < len(BOARD_CHARS) else "."])
+        toks.append(VOCAB[CODE_TO_CHAR.get(int(code), ".")])
     toks.append(VOCAB[SIDE_CHARS[side]])
     toks.append(VOCAB[CASTLE_CHARS[castling & 15]])
     toks.append(VOCAB[EP_CHARS[0] if ep >= 8 else EP_CHARS[1 + ep]])

@@ -134,3 +134,22 @@ def test_diffusion_tokenizer_roundtrip():
     # promo tokens live after moves
     pt = td.move_token(12, 28, 4)
     assert pt >= td.MOVE_BASE + 4096
+
+
+def test_diffusion_black_pieces_and_vocab_range():
+    import train_diffusion as td
+    import numpy as np
+    import chess
+    board = chess.Board()
+    codes = np.zeros(64, dtype=np.uint8)
+    for sq in chess.SQUARES:
+        p = board.piece_at(sq)
+        if p:
+            codes[sq] = td.SYM2CODE[p.symbol()]
+    toks = td.encode_state(codes, 1, 15, 255)
+    inv = {v: k for k, v in td.VOCAB.items()}
+    assert "".join(inv[t] for t in toks[56:64]) == "rnbqkbnr"
+    assert "".join(inv[t] for t in toks[48:56]) == "pppppppp"
+    assert inv[toks[64]] == "sb"
+    assert max(td.VOCAB.values()) < td.V
+    assert len(td.VOCAB) == td.V
