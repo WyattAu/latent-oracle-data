@@ -190,6 +190,8 @@ def main() -> int:
                     help="0 = argmax of the gated distribution")
     ap.add_argument("--seed", type=int, default=5)
     ap.add_argument("--diffu-color", choices=["white", "black", "both"], default="both")
+    ap.add_argument("--both-greedy", action="store_true",
+                    help="harness control: greedy BC vs greedy BC should score ~0.500")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -225,7 +227,7 @@ def main() -> int:
         while (not board.is_game_over()) and len(history) < args.ply_cap:
             mover = board.turn
             is_diffu = (mover == chess.WHITE) == diffu_white
-            if is_diffu:
+            if is_diffu and not args.both_greedy:
                 mv = diffusion_move(dnet, board, args.T, args.temperature, rng)
             else:
                 mv = greedy_move(bc, board, v3=False)
