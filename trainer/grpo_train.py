@@ -170,12 +170,17 @@ def main():
             scores, _, _ = model(codes, side, castle=castle, ep=ep)
             flat = scores.reshape(args.groups, 64 * 64)
             bscores, _, _ = base(codes, side, castle=castle, ep=ep)
+            zero_idx = torch.zeros(args.k, dtype=torch.long, device=device)
             for j, b in enumerate(boards):
                 legal = list(b.legal_moves)
                 if len(legal) < 2:
-                    legal = legal or []
-                if len(legal) < 2:
+                    # Every list must stay index-aligned with fens: this branch
+                    # used to append only to fens, so moves_per/acts/base_logp
+                    # ran short and the reward loop indexed past their end.
                     fens.append(None)
+                    moves_per.append(([], {}))
+                    acts.append(zero_idx.clone())
+                    base_logp.append(zero_idx.to(device=device, dtype=torch.float))
                     continue
                 mask = torch.full((64 * 64,), float("-inf"), device=device)
                 umap = {}
@@ -187,6 +192,13 @@ def main():
                 lp = F.log_softmax(flat[j] + mask, dim=-1)
                 k = min(args.k, len(legal))
                 acts_j = gumbel_top_k(lp.unsqueeze(0), k)[0]
+                # Pad to exactly k slots: positions with fewer than k legal
+                # moves produced ragged logp vectors, which crashed the PPO
+                # update in torch.stack. Slot 0 is (0 -> 0) and can never be a
+                # legal move, so it is a safe dummy; its advantage is masked to
+                # zero below, so it contributes no gradient.
+                if k < args.k:
+                    acts_j = torch.cat([acts_j, acts_j.new_zeros(args.k - k)])
                 fens.append((b, mask))
                 moves_per.append((legal, umap))
                 acts.append(acts_j)
@@ -211,10 +223,12 @@ def main():
     while step < args.steps:
         fens, moves_per, acts, base_logp, (bc, bs, castles, eps) = build_step(rng_local)
         # rewards via SF pool
-        rewards = torch.full((args.groups, args.k), float("nan"))
+        # Zeros, not NaN: padded slots used to stay NaN and poisoned the mean
+        # and std of their whole group, so the loss became NaN.
+        rewards = torch.zeros((args.groups, args.k), device=device)
+        valid = torch.zeros((args.groups, args.k), device=device)
         for j, f in enumerate(fens):
             if f is None:
-                rewards[j, :] = 0.0
                 continue
             b, mask = f
             legal, umap = moves_per[j]
@@ -222,14 +236,18 @@ def main():
                 a_int = int(a)
                 m = umap.get(a_int)
                 if m is None:
-                    rewards[j, ai] = 0.0
-                    continue
+                    continue          # padded slot: stays invalid (adv 0)
                 b.push(m)
                 r = reward_of(b.fen(), j)
                 b.pop()
                 rewards[j, ai] = r
-        adv = (rewards - rewards.mean(dim=1, keepdim=True)) / \
-              (rewards.std(dim=1, keepdim=True) + 1e-6)
+                valid[j, ai] = 1.0
+        cnt = valid.sum(dim=1, keepdim=True).clamp(min=1.0)
+        mean = (rewards * valid).sum(dim=1, keepdim=True) / cnt
+        var = (((rewards - mean) ** 2) * valid).sum(dim=1, keepdim=True) / cnt
+        adv = torch.where(valid > 0,
+                          (rewards - mean) / (var.sqrt() + 1e-6),
+                          torch.zeros_like(rewards))
         adv = adv.reshape(-1)
 
         # second forward for the update (policy moved only by grad steps)

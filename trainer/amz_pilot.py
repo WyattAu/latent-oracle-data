@@ -159,7 +159,10 @@ def main():
                             t["moves"], t["p"]))
             if len(samples) == 50:
                 # fail-fast slice validation (standing policy)
-                for _, mv, p in samples[:50]:
+                for codes, side, mv, p in samples[:50]:
+                    # samples are (board_codes, side, move_list, distribution)
+                    assert codes.shape == (64,), f"board codes shape {codes.shape}"
+                    assert side in (0, 1), f"side out of range: {side}"
                     assert len(mv) == len(p) and len(p) >= 1, "target shape broken"
                     assert all(0.0 <= x <= 1.0 for x in p), "probability out of range"
                     assert abs(sum(p) - 1.0) < 1e-4, f"target not normalized: {sum(p)}"
