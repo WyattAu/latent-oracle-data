@@ -106,9 +106,7 @@ def amz_targets(model, codes: np.ndarray, side: int, device: str,
     p_amz /= p_amz.sum()
     # oracle floor: blend with the played move (BC prior) via alpha on SF eval
     if sf_eval is not None and alpha > 0:
-        p_sf = np.zeros_like(p_amz)
         # move played in this record is unknown here; uniform oracle blend on Q
-        k = 0.00368208
         pw = math.tanh(sf_eval / 1200.0) / 2 + 0.5  # rough match to logistic
         Q_oracle = np.full_like(Q, np.clip(pw, 0.02, 0.98))
         Q_mix = alpha * Q_oracle + (1 - alpha) * Q
@@ -133,7 +131,6 @@ def main():
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    rng = np.random.default_rng(0)
     import random
     pyrng = random.Random(0)
 
@@ -145,7 +142,9 @@ def main():
     cache = os.path.join(args.out, "amz_targets.pt")
     os.makedirs(args.out, exist_ok=True)
     if os.path.exists(cache):
-        samples = load_artifact(cache, weights_only=True)
+        # the sample cache is a numpy array, not a state dict:
+        # weights_only=True would reject it outright
+        samples = load_artifact(cache, weights_only=False)
         print(f"loaded {len(samples)} cached target samples", flush=True)
     else:
         samples = []

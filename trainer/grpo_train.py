@@ -117,7 +117,6 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(0)
     random.seed(0)
-    rng = random.Random(0)
 
     model = ChessNet(v3=args.v3).to(device)
     model.load_state_dict(load_artifact(args.net, weights_only=True))
@@ -171,7 +170,6 @@ def main():
             scores, _, _ = model(codes, side, castle=castle, ep=ep)
             flat = scores.reshape(args.groups, 64 * 64)
             bscores, _, _ = base(codes, side, castle=castle, ep=ep)
-            bflat = bscores.reshape(args.groups, 64 * 64)
             for j, b in enumerate(boards):
                 legal = list(b.legal_moves)
                 if len(legal) < 2:
@@ -189,7 +187,6 @@ def main():
                 lp = F.log_softmax(flat[j] + mask, dim=-1)
                 k = min(args.k, len(legal))
                 acts_j = gumbel_top_k(lp.unsqueeze(0), k)[0]
-                blp = F.log_softmax(bflat[j] + mask, dim=-1)
                 fens.append((b, mask))
                 moves_per.append((legal, umap))
                 acts.append(acts_j)

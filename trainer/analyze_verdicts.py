@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from sprt_pentanomial import main as pentanomial_main  # noqa: E402
 
 
 def game_elo(txt_path: Path) -> str:

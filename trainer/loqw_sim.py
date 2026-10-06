@@ -95,7 +95,6 @@ def forward(m: Loqw, codes: torch.Tensor, side: int, dbg=False):
          torch.from_numpy(m.side_emb).float().reshape(2, d)[side]).squeeze(0)
     if dbg:
         pass
-    sq_idx = torch.arange(64)
     for li, lay in enumerate(m.layers):
         h = ln_np(x, lay["ln1w"], lay["ln1b"])
         q = ql_np(h, lay["Wq"]); k = ql_np(h, lay["Wk"]); v = ql_np(h, lay["Wv"])

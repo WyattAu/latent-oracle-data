@@ -28,19 +28,37 @@ def save_atomic(obj, path: str) -> str:
     return path
 
 
+def _is_truncation(exc: BaseException) -> bool:
+    """True only for the signatures of a half-written artifact.
+
+    Deliberately narrow: an earlier version healed on ANY exception and would
+    delete a perfectly good checkpoint when, say, `weights_only=True` was
+    passed for a numpy array. Destroying an 18 h run's output to retry a load
+    is far worse than surfacing the error.
+    """
+    if isinstance(exc, EOFError):
+        return True
+    msg = str(exc).lower()
+    return ("ran out of input" in msg
+            or "unexpected end of file" in msg
+            or "pytorchstreamreader failed" in msg
+            or "truncated" in msg)
+
+
 def load_artifact(path: str, *, heal: bool = True, weights_only: bool = False):
     """torch.load that survives a truncated/corrupt file: unlink and retry once.
 
-    Raises the original error if the retry also fails, so real problems
-    (wrong shape, missing keys) are not masked.
+    Only truncation signatures trigger the unlink (see `_is_truncation`); every
+    other error is re-raised with the file untouched. Raises the retry's error
+    if the retry also fails, so real problems are not masked.
     """
     try:
         return torch.load(path, weights_only=weights_only)
-    except Exception as exc:  # noqa: BLE001 - deliberate broad catch
-        if not heal or not os.path.exists(path):
+    except Exception as exc:  # noqa: BLE001 - re-raised unless truncation
+        if not heal or not os.path.exists(path) or not _is_truncation(exc):
             raise
         size = os.path.getsize(path)
-        print(f"[io] corrupt artifact {path} ({size} B): {type(exc).__name__}: {exc}"
-              f" -- unlinking and retrying once", flush=True)
+        print(f"[io] truncated artifact {path} ({size} B): {type(exc).__name__}: "
+              f"{exc} -- unlinking and rebuilding once", flush=True)
         os.unlink(path)
         return torch.load(path, weights_only=weights_only)

@@ -67,7 +67,6 @@ def main():
     expected = []
     for fen in fens:
         s, p, w = reference_scores(model, fen)
-        codes = codes_from_fen(fen)
         # legal-move mask via python-chess (training-time GPL tool)
         import chess
         board = chess.Board(fen)

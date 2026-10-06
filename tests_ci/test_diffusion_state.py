@@ -92,7 +92,6 @@ def test_validation_gate_rejects_impossible_ep_token():
     """The gate must reject an EP file token that cannot be legal for the side
     to move. (Constructed by hand: encode_state can no longer emit one, so
     this pins the gate's own arithmetic.)"""
-    import pytest
     from train_diffusion import SEP, STATE_LEN, VOCAB, _validate_sample_slice
 
     board = [VOCAB["."]] * 64

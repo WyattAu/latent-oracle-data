@@ -181,8 +181,8 @@ class ChessNet(nn.Module):
         v3 extras are optional with safe defaults, so all v1 call sites work
         unchanged: castle (B,) bitmask, ep (B,) file-or-0, rating (B,) bucket,
         history = list of up to 3 (from,to) tuples, oldest first."""
-        B = codes.shape[0]
         device = codes.device
+        B = codes.shape[0]
         sq = torch.arange(64, device=device)
         x = self.piece_emb(codes) + self.square_emb(sq).unsqueeze(0) + self.side_emb(side).unsqueeze(1)
         if self.v3:
@@ -236,7 +236,6 @@ class ChessNet(nn.Module):
         block stack, per-pass policy scores returned for the RCT loss.
         Pass r reads the residual stream left by pass r-1 (engine parity:
         src/nn/net.cpp run_trunk loop)."""
-        B = codes.shape[0]
         sq = torch.arange(64, device=codes.device)
         x = self.piece_emb(codes) + self.square_emb(sq).unsqueeze(0) + self.side_emb(side).unsqueeze(1)
         bias = self._gab_bias()

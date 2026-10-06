@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import random
 import sys
 
 import numpy as np
@@ -396,10 +395,15 @@ def main():
 
     cache = args.out + f"_h{args.horizon}_samples.pt"
     os.makedirs(args.out, exist_ok=True)
+    samples = None
     if os.path.exists(cache):
-        samples = load_artifact(cache)
-        print(f"loaded {len(samples)} cached samples", flush=True)
-    else:
+        try:
+            samples = load_artifact(cache)
+            print(f"loaded {len(samples)} cached samples", flush=True)
+        except FileNotFoundError:
+            # load_artifact unlinked a truncated cache; rebuild it below
+            print("cache was truncated; rebuilding", flush=True)
+    if samples is None:
         print("building samples from shard pairs (this scans the shard)...", flush=True)
         model_probe = DiffuNet(args.d, args.layers, args.heads, args.dff,
                                max_len=2 + STATE_LEN + args.horizon * (1 + STATE_LEN)).to(device)
@@ -424,7 +428,6 @@ def main():
                 ids = torch.from_numpy(np.ascontiguousarray(chunk, dtype=np.int64)).to(device)
                 a0_pos = src_len  # first action token position
                 # single full reveal: measure a0 accuracy from a 50%-masked pass
-                t = torch.full((len(chunk),), args.T // 2 - 1, device=device)
                 mask_prob = float((args.T // 2) / args.T)
                 drop = (torch.rand_like(ids, dtype=torch.float) < mask_prob)
                 drop[:, :src_len] = False
