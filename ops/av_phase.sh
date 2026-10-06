@@ -35,6 +35,12 @@ log "=== AV phase armed (waits mixed labeling + moonshot queue) ==="
 while pgrep -f "label_mixed.sh" > /dev/null; do sleep 600; done
 [ -f "$DATA/shards/labeled_d16_1m.shard" ] || { log "FATAL: d16 shard missing"; exit 1; }
 while pgrep -f "moonshot_queue.sh" > /dev/null; do sleep 600; done
+# keep_best starts the moment labeling ends and publishes net_best.pt once the
+# bc_v1 epochs are ranked. Wait for the ARTIFACT rather than for the script to
+# exit: the gate also measures bc_v1f and dist1m_dw for the record, and waiting
+# on those would put hours of pure information between labeling and the AV run.
+while [ ! -f "$DATA/runs/bc_v1/net_best.pt" ]; do sleep 600; done
+log "gate winner available: net_best.pt"
 while [ "$(gpu_free_mb)" -lt 3600 ]; do sleep 300; done
 cd "$TR"
 

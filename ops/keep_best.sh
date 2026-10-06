@@ -28,13 +28,17 @@ wait_for_ram() {
   log "ram ok: $(ram_avail_mb)MB available (needed ${need}MB)"
 }
 sprt_one() {  # $1 name  $2 blob path  $3 plies -> echoes "W L D" or fails
+  # Ranking gate, not a strength measurement: all epochs are compared at
+  # identical settings, so 100 games at 15+1.5 ranks them as well as 200 at
+  # 60+6 while costing ~1/8 the CPU. Absolute strength is measured by the
+  # phase_post SPRTs at proper time controls.
   local txt=$DATA/sprt/kb-$1-p$3.txt
   $TOOLS/fastchess \
     -engine cmd="$ENGINE" name=kb-$1 option.WeightsFile=$2 \
     -engine cmd="$SF" name=sf16-p$3 option.Threads=1 option.Hash=16 \
-    -each proto=uci tc=60+6 plies=$3 \
+    -each proto=uci tc=15+1.5 plies=$3 \
     -openings file=$TOOLS/openings.epd format=epd order=random \
-    -games 200 -rounds 100 -repeat -concurrency 5 \
+    -games 100 -rounds 50 -repeat -concurrency 4 \
     -pgnout file=$DATA/sprt/kb-$1-p$3.pgn > "$txt" 2>&1
   grep -q "Finished match" "$txt" || return 1
   grep -E "Elo:|Games:" "$txt" | head -2
@@ -57,9 +61,15 @@ gate() {  # $1 run dir name (e.g. bc_v1)
       # fastchess prints RUNNING SPRT estimates mid-match; the verdict is the
       # LAST Elo line (head -1 picked a 14-game snapshot -- same bug class as
       # trainer/analyze_verdicts.py).
+      # fastchess prints "Elo: X, nElo: Y" on ONE line, so `grep -oE 'Elo:'`
+      # matches the nElo value too -- and `tail -1` then picks exactly the
+      # wrong number. Strip the nElo clause before extracting, and keep the
+      # FINAL verdict line (fastchess also prints running snapshots).
       local elo best_elo
-      elo=$(echo "$res" | grep -oE 'Elo: [-0-9]+' | tail -1 | grep -oE '[-0-9]+')
-      best_elo=$(echo "$best_txt" | grep -oE 'Elo: [-0-9]+' | tail -1 | grep -oE '[-0-9]+')
+      elo=$(echo "$res" | sed 's/, nElo:.*//' | grep -oE 'Elo: [-0-9.]+' \
+            | tail -1 | grep -oE '[-0-9.]+')
+      best_elo=$(echo "$best_txt" | sed 's/, nElo:.*//' | grep -oE 'Elo: [-0-9.]+' \
+            | tail -1 | grep -oE '[-0-9.]+')
       if [ -z "$best_txt" ] || [ "${elo:--9999}" -gt "${best_elo:--9999}" ]; then
         best_txt="$res"; best_blob=$blob
       fi
