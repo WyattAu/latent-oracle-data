@@ -12,6 +12,7 @@ import os
 import sys
 
 import chess
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -44,7 +45,9 @@ def decode_source_board(src_toks: list[int]):
         ch = [k for k, v in td.VOCAB.items() if v == src_toks[1 + sq]][0]
         if ch in SYM2CODE:
             board.set_piece_at(sq, chess.Piece.from_symbol(ch))
-    board.turn = chess.WHITE if src_toks[1 + 64] == td.VOCAB["w"] else chess.BLACK
+    # side tokens are "sw"/"sb": plain "b" collided with the black bishop
+    board.turn = (chess.WHITE if src_toks[1 + 64] == td.VOCAB[td.SIDE_CHARS[0]]
+                 else chess.BLACK)
     return board
 
 
@@ -66,7 +69,8 @@ def legal_move_token_ids(src_toks: list[int]) -> set[int]:
 def denoise(model: DiffuNet, sample: list[int], src_len: int, T: int, device: str,
             legal_gate: bool = False) -> tuple[int, int]:
     """Returns (predicted a0 token, true a0 token)."""
-    ids = torch.tensor([sample], dtype=torch.long, device=device)
+    row = np.asarray(sample, dtype=np.int64)
+    ids = torch.from_numpy(row).unsqueeze(0).to(device)
     true_a0 = int(ids[0, src_len])
     x = ids.clone()
     x[0, src_len:] = MASK
