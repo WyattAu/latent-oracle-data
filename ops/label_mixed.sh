@@ -32,7 +32,7 @@ wait_for_ram 1500
 $LO label \
   --in $DATA/shards/bc_v1_combined.shard \
   --out $DATA/shards/labeled_d10_4m.shard \
-  --sf "$SF" --depth 10 --threads 6 --hash 256 --max-records 4000000 \
+  --sf "$SF" --depth 10 --threads 6 --hash 256 --max-records 2000000 \
   --resume --batch-records 10000 \
   >> "$LOG" 2>&1
 [ -f "$DATA/shards/labeled_d10_4m.shard" ] || { log "FATAL: d10 stage failed"; exit 1; }
@@ -41,7 +41,7 @@ log "stage 1 complete: labeled_d10_4m.shard"
 $LO label \
   --in $DATA/shards/bc.shard \
   --out $DATA/shards/labeled_d16_1m.shard \
-  --sf "$SF" --depth 16 --threads 6 --hash 256 --max-records 1000000 \
+  --sf "$SF" --depth 16 --threads 6 --hash 256 --max-records 500000 \
   --resume --batch-records 5000 \
   >> "$LOG" 2>&1
 [ -f "$DATA/shards/labeled_d16_1m.shard" ] || { log "FATAL: d16 stage failed"; exit 1; }
