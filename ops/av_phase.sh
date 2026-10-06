@@ -110,4 +110,9 @@ $TOOLS/fastchess \
   -pgnout file=$DATA/sprt/av-vs-bc.pgn > $DATA/sprt/av-vs-bc.txt 2>&1
 grep -E "Elo:|Games:" $DATA/sprt/av-vs-bc.txt | head -2 >> "$LOG"
 $PY conversion_metrics.py $DATA/sprt/av-vs-bc.pgn >> "$LOG" 2>&1
+# one-command verdict record: final game-level Elo + pentanomial pair model +
+# conversion, so the ledger entry never has to be reconstructed by hand
+log "--- AV verdict summary ---"
+$PY analyze_verdicts.py $DATA/sprt/av-vs-bc \
+  --net-name "AV-v3 (d10+d16, RCT+QAT) vs BC gate winner" >> "$LOG" 2>&1
 log "=== AV phase complete — verdict in $LOG ==="
