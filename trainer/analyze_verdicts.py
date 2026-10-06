@@ -16,7 +16,10 @@ def game_elo(txt_path: Path) -> str:
     txt = txt_path.read_text()
     # fastchess prints RUNNING SPRT estimates mid-match; the verdict is the
     # LAST Elo/Games pair in the file.
-    elo = re.findall(r"Elo: ([-0-9.]+) \+/- ([0-9.]+)", txt)
+    # fastchess prints "Elo: X, nElo: Y" on ONE line, so a plain `Elo:` search
+    # matches the nElo value too. \b requires a word boundary, which "nElo"
+    # does not have before "Elo".
+    elo = re.findall(r"\bElo: ([-0-9.]+) \+/- ([0-9.]+)", txt)
     games = re.findall(r"Games: (\d+), Wins: (\d+), Losses: (\d+), Draws: (\d+)", txt)
     if not elo:
         return "n/a"
