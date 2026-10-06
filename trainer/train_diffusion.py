@@ -420,24 +420,43 @@ def main():
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
 
     def eval_match():
+        """Holdout a0 accuracy, reported two ways.
+
+        HONEST is the number that matters: mask the ENTIRE target region, so
+        the model must produce the move from the position alone -- that is what
+        inference actually does (infer_diffusion.denoise masks everything up
+        front).
+
+        LEAKED is the old single-pass number, kept only for continuity. It
+        masks just half the target region, which leaves the future state
+        tokens visible; the move is then trivially recoverable from the
+        visible resulting position, which is why it read 0.971 on a model
+        whose honest score is 0.33. Do not quote it as accuracy.
+        """
         model.eval()
-        hits = 0
+        honest_hits = leaked_hits = 0
+        n = 0
         with torch.no_grad():
             for i in range(0, len(hold), 64):
                 chunk = hold[i:i + 64]
                 ids = torch.from_numpy(np.ascontiguousarray(chunk, dtype=np.int64)).to(device)
                 a0_pos = src_len  # first action token position
-                # single full reveal: measure a0 accuracy from a 50%-masked pass
+
+                full = ids.clone()
+                full[:, src_len:] = MASK
+                pred = model(full)[:, a0_pos].argmax(-1)
+                honest_hits += int((pred == ids[:, a0_pos]).sum())
+
                 mask_prob = float((args.T // 2) / args.T)
                 drop = (torch.rand_like(ids, dtype=torch.float) < mask_prob)
                 drop[:, :src_len] = False
                 noised = ids.clone()
                 noised[drop] = MASK
-                logits = model(noised)
-                pred = logits[:, a0_pos].argmax(-1)
-                hits += int((pred == ids[:, a0_pos]).sum())
+                pred = model(noised)[:, a0_pos].argmax(-1)
+                leaked_hits += int((pred == ids[:, a0_pos]).sum())
+                n += len(chunk)
         model.train()
-        return hits / max(1, len(hold))
+        return honest_hits / max(1, n), leaked_hits / max(1, n)
 
     step = 0
     for epoch in range(args.epochs):
@@ -460,8 +479,10 @@ def main():
                 break
             if done >= len(train):
                 break
-        acc = eval_match()
-        print(f"epoch {epoch}: a0 match {acc:.3f}", flush=True)
+        acc_honest, acc_leaked = eval_match()
+        print(f"epoch {epoch}: a0 match {acc_honest:.3f} (honest, target fully "
+              f"masked) | {acc_leaked:.3f} leaked (half the future visible, not "
+              f"an accuracy)", flush=True)
         import json
         cfg = dict(d=args.d, layers=args.layers, heads=args.heads, dff=args.dff,
                    max_len=max_len, horizon=args.horizon, T=args.T)

@@ -39,15 +39,44 @@ def id_to_move_tok(i: int):
 
 
 def decode_source_board(src_toks: list[int]):
+    """Reconstruct the position a source-state token run describes.
+
+    Castling and en-passant MUST be restored, not just pieces and turn:
+    without them `legal_move_token_ids` omits every castling move (so the legal
+    gate forbids castling outright) and en-passant states decode wrong. The EP
+    token carries only the file; the rank follows from the side to move
+    (white to move => the EP square is on rank 6).
+    """
     import chess
+    inv = {v: k for k, v in td.VOCAB.items()}
     board = chess.Board(None)
     for sq in range(64):
-        ch = [k for k, v in td.VOCAB.items() if v == src_toks[1 + sq]][0]
+        ch = inv[src_toks[1 + sq]]
         if ch in SYM2CODE:
             board.set_piece_at(sq, chess.Piece.from_symbol(ch))
     # side tokens are "sw"/"sb": plain "b" collided with the black bishop
     board.turn = (chess.WHITE if src_toks[1 + 64] == td.VOCAB[td.SIDE_CHARS[0]]
                  else chess.BLACK)
+
+    castle_tok = inv[src_toks[1 + 65]]
+    mask = int(castle_tok[1:]) if castle_tok.startswith("C") else 0
+    rights = ""
+    if mask & 1:
+        rights += "K"
+    if mask & 2:
+        rights += "Q"
+    if mask & 4:
+        rights += "k"
+    if mask & 8:
+        rights += "q"
+    if rights:
+        board.set_castling_fen(rights)
+
+    ep_tok = inv[src_toks[1 + 66]]
+    if ep_tok.startswith("E"):
+        file_i = ord(ep_tok[1]) - ord("a")
+        rank = 5 if board.turn == chess.WHITE else 2   # rank 6 if white, rank 3 if black
+        board.ep_square = rank * 8 + file_i
     return board
 
 

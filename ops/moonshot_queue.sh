@@ -40,8 +40,21 @@ gpu_wait() { while [ "$(gpu_free_mb)" -lt 3600 ]; do sleep 180; done; }
 gpu_wait
 cd "$TR"
 
+# ---- 0. DiffuSearch strength verdict (2026-10-06): REJECTED.
+# A position-level strength test (trainer/diffusion_playout.py, diffusion
+# policy vs greedy play of the SAME BC weights) scored 0W 0D 12L with the
+# inference path verified against infer_diffusion (27% vs 33% a0 agreement).
+# The a0-match gate below measures next-move predictability, NOT strength: it
+# read 0.33 for a policy that loses every game, and 0.97 when half the future
+# was left visible. Do not re-run DiffuSearch training on the a0 signal.
+DIFFU_VERDICT="REJECTED (playout 0-12 to greedy BC; a0 gate invalid as strength proxy)"
+DIFFU_REJECTED=1
+log "DiffuSearch: $DIFFU_VERDICT"
+
 # ---- 1. DiffuSearch h=2
-if [ ! -f "$DATA/runs/diffu_v1/diffu_e1.pt" ]; then
+if [ "$DIFFU_REJECTED" = "1" ]; then
+  log "skip 1: DiffuSearch rejected by strength verdict"
+elif [ ! -f "$DATA/runs/diffu_v1/diffu_e1.pt" ]; then
   gpu_wait
   wait_for_ram 3000
   log "moonshot 1: DiffuSearch h=2 training"
@@ -58,10 +71,15 @@ else
 fi
 
 # ---- 2. DiffuSearch eval
+if [ "$DIFFU_REJECTED" = "1" ]; then
+  AMATCH=0.0
+  log "skip 2: DiffuSearch eval (rejected)"
+else
 $PY infer_diffusion.py --run $DATA/runs/diffu_v1 --ckpt diffu_e1.pt \
   --T 16 --limit 300 >> "$LOG" 2>&1
 AMATCH=$(grep -oE "a0 match [0-9.]+" "$LOG" | tail -1 | grep -oE "[0-9.]+$")
 log "DiffuSearch a0-match = ${AMATCH:-?} (kill < 0.25; double-down >= 0.40)"
+fi
 
 # ---- 3. AMZ pilot
 if [ ! -f "$DATA/runs/amz_pilot/amz_e0.pt" ]; then
@@ -120,7 +138,9 @@ else
   log "no DiffuSearch double-down (a0 < 0.25)"
   H=0
 fi
-if [ "$H" != "0" ]; then
+if [ "$DIFFU_REJECTED" = "1" ]; then
+  log "skip 5: no DiffuSearch double-down (rejected by strength verdict)"
+elif [ "$H" != "0" ]; then
   gpu_wait
   $PY train_diffusion.py \
     --shard $DATA/shards/bc_v1_combined.shard \
