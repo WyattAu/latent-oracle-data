@@ -10,6 +10,7 @@ Three silent-corruption bugs lived here; each is pinned below:
   3. `_validate_sample_slice` read s[2:2+64] instead of s[1:1+64], so the
      gate that should have caught (1) inspected a shifted window.
 """
+import math
 import os
 import sys
 
@@ -126,3 +127,29 @@ def test_encode_state_never_emits_an_illegal_ep_token():
             rank = 5 if side == SIDE_CHARS.index(SIDE_CHARS[0]) else 2
             sq = rank * 8 + file_i
             assert 16 <= sq <= 23 or 40 <= sq <= 47, (side, ep, tok, sq)
+
+
+def test_param_group_sched_matches_torch_lambdalr():
+    """The Muon path uses a joint optimizer that is not a torch Optimizer, so
+    train.py falls back to _ParamGroupSched. It must track LambdaLR exactly
+    (the AV stage-1 WSD schedule depends on it)."""
+    import torch
+
+    from train import _ParamGroupSched
+
+    for kind, fn in (
+        ("cosine", lambda st, total=100, warm=5: min(1.0, st / warm)
+         * (0.1 + 0.45 * (1 + math.cos(math.pi * min(1.0, st / total))))),
+        ("wsd", lambda st, total=100: min(1.0, st / 5)
+         * (1.0 if st < 90 else max(0.1, 1.0 - 0.9 * (st - 90) / 10))),
+    ):
+        ref = torch.optim.AdamW([torch.nn.Parameter(torch.zeros(1))], lr=0.01)
+        got = torch.optim.AdamW([torch.nn.Parameter(torch.zeros(1))], lr=0.01)
+        real = torch.optim.lr_scheduler.LambdaLR(ref, lambda st: fn(st))
+        shim = _ParamGroupSched(got, lambda st: fn(st))
+        assert abs(real.get_last_lr()[0] - shim.get_last_lr()[0]) < 1e-12, kind
+        for _ in range(20):
+            real.step()
+            shim.step()
+            assert abs(real.get_last_lr()[0] - shim.get_last_lr()[0]) < 1e-12, (
+                f"{kind}: diverged at step {real.last_epoch}")

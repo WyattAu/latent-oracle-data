@@ -171,6 +171,35 @@ def ensure_mask(args) -> MaskSidecar | None:
     return MaskSidecar(mask_path)
 
 
+
+class _ParamGroupSched:
+    """Minimal stand-in for LambdaLR for optimizers that are not
+    torch.optim.Optimizer subclasses (the joint Muon/AdamW wrapper).
+
+    Mirrors LambdaLR semantics: lr = initial_lr * fn(step), applied once at
+    construction and again on every step().
+    """
+
+    def __init__(self, opt, fn):
+        self.opt = opt
+        self.fn = fn
+        self.base = [g.get("initial_lr", g["lr"]) for g in opt.param_groups]
+        self.t = 0
+        self._apply()          # LambdaLR applies fn(0) at construction
+
+    def _apply(self):
+        factor = self.fn(self.t)
+        for group, base in zip(self.opt.param_groups, self.base):
+            group["lr"] = base * factor
+
+    def step(self):
+        self.t += 1
+        self._apply()
+
+    def get_last_lr(self):
+        return [g["lr"] for g in self.opt.param_groups]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shard", required=True)
@@ -317,11 +346,19 @@ def main():
             decay_start = int(0.9 * total_steps)
             lambda_lr = lambda st: min(1.0, st / warm) * (
                 1.0 if st < decay_start else max(0.1, 1.0 - 0.9 * (st - decay_start) / max(1, total_steps - decay_start)))
-        scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lambda_lr) if not isinstance(opt, dict) else None
-        try:
-            scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lambda_lr)
-        except TypeError:
-            scheduler = None  # joint optimizer wrapper: skip (short fine-tunes)
+        # The Muon path wraps AdamW+Muon in _JointOpt, which is not a
+        # torch.optim.Optimizer, so LambdaLR rejects it. The unguarded call
+        # that used to sit here raised TypeError and killed the AV stage-1 run
+        # at startup -- after 40 h of labeling. Use a param-group shim so the
+        # schedule is actually applied instead of silently skipped.
+        scheduler = None
+        if not isinstance(opt, dict):
+            try:
+                scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lambda_lr)
+            except TypeError:
+                scheduler = _ParamGroupSched(opt, lambda_lr)
+                print("scheduler: param-group shim (joint Muon/AdamW wrapper)",
+                      flush=True)
     for epoch in range(args.epochs):
         stream = enumerate(iter_records(args.shard))
         done = 0
