@@ -1,0 +1,155 @@
+{
+    "resign": {
+        "move_count": 1,
+        "score": 0,
+        "twosided": false,
+        "enabled": false
+    },
+    "draw": {
+        "move_number": 0,
+        "move_count": 1,
+        "score": 0,
+        "enabled": false
+    },
+    "maxmoves": {
+        "move_count": 1,
+        "enabled": false
+    },
+    "tb_adjudication": {
+        "syzygy_dirs": "",
+        "max_pieces": 0,
+        "ignore_50_move_rule": false,
+        "enabled": false
+    },
+    "opening": {
+        "file": "/home/wyatt/tools/chess/openings.epd",
+        "format": 0,
+        "order": 0,
+        "plies": -1,
+        "start": 1
+    },
+    "pgn": {
+        "additional_lines_rgx": [],
+        "event_name": "Fastchess Tournament",
+        "site": "?",
+        "file": "/home/wyatt/data/sprt/amz-vs-bc.pgn",
+        "notation": 0,
+        "append_file": true,
+        "track_nodes": false,
+        "track_seldepth": false,
+        "track_nps": false,
+        "track_hashfull": false,
+        "track_tbhits": false,
+        "track_timeleft": false,
+        "track_latency": false,
+        "track_pv": false,
+        "min": false,
+        "crc": false
+    },
+    "epd": {
+        "file": "",
+        "append_file": true
+    },
+    "sprt": {
+        "alpha": 0.0,
+        "beta": 0.0,
+        "elo0": 0.0,
+        "elo1": 0.0,
+        "model": "normalized",
+        "enabled": false
+    },
+    "config_name": "config.json",
+    "output": 0,
+    "seed": 2635116803839047976,
+    "variant": 0,
+    "type": 0,
+    "gauntlet_seeds": 1,
+    "ratinginterval": 10,
+    "scoreinterval": 1,
+    "wait": 0,
+    "autosaveinterval": 20,
+    "games": 2,
+    "rounds": 200,
+    "concurrency": 6,
+    "force_concurrency": false,
+    "recover": false,
+    "noswap": false,
+    "reverse": false,
+    "report_penta": true,
+    "affinity": false,
+    "check_mate_pvs": false,
+    "show_latency": false,
+    "log": {
+        "file": "",
+        "level": 3,
+        "append_file": true,
+        "compress": false,
+        "realtime": true,
+        "engine_coms": false
+    },
+    "engines": [
+        {
+            "name": "bc-v1-e2",
+            "dir": "",
+            "cmd": "/home/wyatt/dev/src/github.com/WyattAu/latent-oracle/build/release/latent-oracle",
+            "args": "",
+            "restart": false,
+            "options": [
+                [
+                    "WeightsFile",
+                    "/home/wyatt/data/runs/bc_v1/net_e2.bin"
+                ]
+            ],
+            "limit": {
+                "tc": {
+                    "increment": 200,
+                    "fixed_time": 0,
+                    "time": 15000,
+                    "moves": 0,
+                    "timemargin": 0
+                },
+                "nodes": 0,
+                "plies": 0
+            },
+            "variant": 0
+        },
+        {
+            "name": "amz-e0",
+            "dir": "",
+            "cmd": "/home/wyatt/dev/src/github.com/WyattAu/latent-oracle/build/release/latent-oracle",
+            "args": "",
+            "restart": false,
+            "options": [
+                [
+                    "WeightsFile",
+                    "/home/wyatt/data/runs/amz_pilot/amz_e0.bin"
+                ]
+            ],
+            "limit": {
+                "tc": {
+                    "increment": 200,
+                    "fixed_time": 0,
+                    "time": 15000,
+                    "moves": 0,
+                    "timemargin": 0
+                },
+                "nodes": 0,
+                "plies": 0
+            },
+            "variant": 0
+        }
+    ],
+    "stats": {
+        "bc-v1-e2 vs amz-e0": {
+            "wins": 25,
+            "losses": 5,
+            "draws": 48,
+            "penta_WW": 4,
+            "penta_WD": 14,
+            "penta_WL": 3,
+            "penta_DD": 16,
+            "penta_LD": 2,
+            "penta_LL": 0
+        }
+    }
+}

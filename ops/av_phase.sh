@@ -2,7 +2,9 @@
 # AV phase (Phase 2): two-stage action-value training on mixed-depth labels.
 #   stage 1: d10 4M pretrain  — v3 arch, Muon, WSD, mirror, EMA, TB sidecar,
 #                              decisive weighting, opening upweight. No RCT.
-#   stage 2: d16 1M fine-tune — + RCT (recycle 2) + QAT projection, batch 256
+#   verdict A: the stage-1 d10 bundle vs the BC chain (fires as soon as the
+#     d10 shard exists -- no need to wait for d16)
+#   phase B: d16 fine-tune + RCT (recycle 2) + QAT, then verdict B
 #                              (RCT doubles trunk activations).
 # Then: SPRT A/B vs the BC chain's net_best + conversion metrics (E4).
 set -u
@@ -31,10 +33,15 @@ wait_for_ram() {
   log "ram ok: $(ram_avail_mb)MB available (needed ${need}MB)"
 }
 
-log "=== AV phase armed (waits mixed labeling + moonshot queue) ==="
-while pgrep -f "label_mixed.sh" > /dev/null; do sleep 600; done
-[ -f "$DATA/shards/labeled_d16_1m.shard" ] || { log "FATAL: d16 shard missing"; exit 1; }
+log "=== AV phase armed (two verdicts: d10 bundle, then +RCT/QAT) ==="
+# Split into two verdicts. Waiting for the whole labeler put ~20 h of d16
+# labeling between the first AV signal and any verdict; stage 1 only needs the
+# d10 shard. It also isolates the two halves of the mechanism: verdict A is
+# "does the AV bundle help at all", verdict B is "does the RCT/QAT refinement
+# on d16 add anything".
 while pgrep -f "moonshot_queue.sh" > /dev/null; do sleep 600; done
+log "waiting for the d10 shard"
+while [ ! -f "$DATA/shards/labeled_d10_4m.shard" ]; do sleep 600; done
 # keep_best starts the moment labeling ends and publishes net_best.pt once the
 # bc_v1 epochs are ranked. Wait for the ARTIFACT rather than for the script to
 # exit: the gate also measures bc_v1f and dist1m_dw for the record, and waiting
@@ -49,11 +56,6 @@ if [ ! -f "$DATA/shards/labeled_d10_4m.shard.tb.jsonl" ]; then
   log "E1: syzygy-rescoring d10 shard"
   $PY make_tb_labels.py --shard $DATA/shards/labeled_d10_4m.shard \
     --out $DATA/shards/labeled_d10_4m.shard.tb.jsonl >> "$LOG" 2>&1
-fi
-if [ ! -f "$DATA/shards/labeled_d16_1m.shard.tb.jsonl" ]; then
-  log "E1: syzygy-rescoring d16 shard"
-  $PY make_tb_labels.py --shard $DATA/shards/labeled_d16_1m.shard \
-    --out $DATA/shards/labeled_d16_1m.shard.tb.jsonl >> "$LOG" 2>&1
 fi
 
 # keep_best.sh now writes the gate winner's checkpoint as net_best.pt
@@ -76,40 +78,25 @@ $PY train.py \
 [ -f "$DATA/runs/av_v3/net_e1.pt" ] || { log "FATAL: AV stage 1 failed"; exit 1; }
 log "AV stage 1 complete"
 
-# ---- Stage 2: d16 fine-tune (+RCT, +QAT, batch 256)
-log "AV stage 2: d16 1M fine-tune (RCT, QAT)"
-$PY train.py \
-  --shard $DATA/shards/labeled_d16_1m.shard \
-  --out $DATA/runs/av_v3_s2 \
-  --epochs 2 --batch 256 --optimizer muon \
-  --gab --v3 --init-from $DATA/runs/av_v3/net_e1.pt \
-  --mirror --ema-decay 0.999 \
-  --decisive-weighting --tb-sidecar $DATA/shards/labeled_d16_1m.shard.tb.jsonl \
-  --opening-weight 1.5 \
-  --recycle 2 --rct-lambda 0.5 --qat \
-  >> "$LOG" 2>&1
-[ -f "$DATA/runs/av_v3_s2/net_e1.pt" ] || { log "FATAL: AV stage 2 failed"; exit 1; }
-log "AV stage 2 complete — export blob + SPRT A/B vs BC chain"
-
-# ---- Export v3 FP32 blob + INT8 blob for the verdict games
+# ---- Export the STAGE-1 v3 blobs for verdict A (stage 2 lives in phase B)
 $PY - << 'PYEOF' >> "$LOG" 2>&1
 import sys, torch
 sys.path.insert(0, "/home/wyatt/dev/src/github.com/WyattAu/latent-oracle-data/trainer")
 from model import ChessNet
 m = ChessNet(v3=True)
-m.load_state_dict(torch.load("/home/wyatt/data/runs/av_v3_s2/net_e1.pt",
+m.load_state_dict(torch.load("/home/wyatt/data/runs/av_v3/net_e1.pt",
                              map_location="cpu", weights_only=True))
-m.export_blob("/home/wyatt/data/runs/av_v3_s2/av_e1.bin")
-print("AV v3 blob exported")
+m.export_blob("/home/wyatt/data/runs/av_v3/av_e1.bin")
+print("AV v3 stage-1 blob exported")
 PYEOF
-$PY export_int8.py --net $DATA/runs/av_v3_s2/net_e1.pt --v3 \
-  --shard $DATA/shards/labeled_d16_1m.shard --calib 2048 \
-  --out $DATA/runs/av_v3_s2/av_e1_q.bin >> "$LOG" 2>&1
+$PY export_int8.py --net $DATA/runs/av_v3/net_e1.pt --v3 \
+  --shard $DATA/shards/labeled_d10_4m.shard --calib 2048 \
+  --out $DATA/runs/av_v3/av_e1_q.bin >> "$LOG" 2>&1
 
-# ---- SPRT A/B: AV vs BC chain best (paired openings), + E4 conversion metrics
+# ---- VERDICT A: the AV bundle (d10 fine-tune) vs the BC chain best
 $TOOLS/fastchess \
   -engine cmd="$ENGINE" name=bc-best option.WeightsFile=$DATA/runs/bc_v1/net_best.bin \
-  -engine cmd="$ENGINE" name=av-v3 option.WeightsFile=$DATA/runs/av_v3_s2/av_e1.bin \
+  -engine cmd="$ENGINE" name=av-v3 option.WeightsFile=$DATA/runs/av_v3/av_e1.bin \
   -each proto=uci tc=15+0.2 \
   -openings file=$TOOLS/openings.epd format=epd order=random \
   -games 400 -rounds 200 -repeat -concurrency 6 \
@@ -120,5 +107,53 @@ $PY conversion_metrics.py $DATA/sprt/av-vs-bc.pgn >> "$LOG" 2>&1
 # conversion, so the ledger entry never has to be reconstructed by hand
 log "--- AV verdict summary ---"
 $PY analyze_verdicts.py $DATA/sprt/av-vs-bc \
-  --net-name "AV-v3 (d10+d16, RCT+QAT) vs BC gate winner" >> "$LOG" 2>&1
-log "=== AV phase complete — verdict in $LOG ==="
+  --net-name "AV-v3 stage 1 (d10 bundle) vs BC gate winner" >> "$LOG" 2>&1
+log "=== VERDICT A complete (AV d10 bundle vs BC) ==="
+
+# ---- Phase B: the d16 refinement, once its labels exist
+log "waiting for the d16 shard (labeling continues in the background)"
+while [ ! -f "$DATA/shards/labeled_d16_1m.shard" ]; do sleep 600; done
+if [ ! -f "$DATA/shards/labeled_d16_1m.shard.tb.jsonl" ]; then
+  log "E1: syzygy-rescoring d16 shard"
+  $PY make_tb_labels.py --shard $DATA/shards/labeled_d16_1m.shard \
+    --out $DATA/shards/labeled_d16_1m.shard.tb.jsonl >> "$LOG" 2>&1
+fi
+# give the labeler the CPU back while it finishes d16
+while pgrep -f "label_mixed.sh" > /dev/null; do sleep 600; done
+while [ "$(gpu_free_mb)" -lt 3600 ]; do sleep 300; done
+
+log "AV phase B: d16 fine-tune (RCT, QAT)"
+$PY train.py \
+  --shard $DATA/shards/labeled_d16_1m.shard \
+  --out $DATA/runs/av_v3_s2 \
+  --epochs 2 --batch 256 --optimizer muon \
+  --gab --v3 --init-from $DATA/runs/av_v3/net_e1.pt \
+  --mirror --ema-decay 0.999 \
+  --decisive-weighting --tb-sidecar $DATA/shards/labeled_d16_1m.shard.tb.jsonl \
+  --opening-weight 1.5 \
+  --recycle 2 --rct-lambda 0.5 --qat \
+  >> "$LOG" 2>&1
+[ -f "$DATA/runs/av_v3_s2/net_e1.pt" ] || { log "FATAL: AV phase B failed"; exit 1; }
+
+$PY - << 'PYEXPORT' >> "$LOG" 2>&1
+import sys, torch
+sys.path.insert(0, "/home/wyatt/dev/src/github.com/WyattAu/latent-oracle-data/trainer")
+from model import ChessNet
+m = ChessNet(v3=True)
+m.load_state_dict(torch.load("/home/wyatt/data/runs/av_v3_s2/net_e1.pt",
+                             map_location="cpu", weights_only=True))
+m.export_blob("/home/wyatt/data/runs/av_v3_s2/av_e1.bin")
+print("phase B blob exported")
+PYEXPORT
+
+$TOOLS/fastchess \
+  -engine cmd="$ENGINE" name=av-stage1 option.WeightsFile=$DATA/runs/av_v3/av_e1.bin \
+  -engine cmd="$ENGINE" name=av-stage2 option.WeightsFile=$DATA/runs/av_v3_s2/av_e1.bin \
+  -each proto=uci tc=15+0.2 \
+  -openings file=$TOOLS/openings.epd format=epd order=random \
+  -games 300 -rounds 150 -repeat -concurrency 4 \
+  -pgnout file=$DATA/sprt/av-s2-vs-s1.pgn > $DATA/sprt/av-s2-vs-s1.txt 2>&1
+grep -E "Elo:|Games:" $DATA/sprt/av-s2-vs-s1.txt | head -2 >> "$LOG"
+$PY analyze_verdicts.py $DATA/sprt/av-s2-vs-s1 \
+  --net-name "AV-v3 +d16 RCT/QAT vs AV-v3 stage 1" >> "$LOG" 2>&1
+log "=== AV phase complete — verdict A (bundle) and B (refinement) in $LOG ==="
