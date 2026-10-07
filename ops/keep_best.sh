@@ -45,8 +45,12 @@ sprt_one() {  # $1 name  $2 blob path  $3 plies -> echoes "W L D" or fails
 }
 
 log "=== keep-best gate armed: waiting for phase_post + labeling to finish ==="
-while pgrep -f "phase_post.sh" > /dev/null || pgrep -f "lo-data label" > /dev/null \
-   || pgrep -f "dw_retrain.sh" > /dev/null; do sleep 600; done
+# The gate ranks checkpoints that ALREADY EXIST (bc_v1, bc_v1f, dist1m_dw);
+# none of them depends on a labeling job. Waiting for `lo-data label` held the
+# AV phase behind ~30 h of d16 labeling for a gate that needs no labels. It
+# still waits for the chains that produce NEW candidate nets.
+while pgrep -f "phase_post.sh" > /dev/null || pgrep -f "dw_retrain.sh" > /dev/null \
+   || pgrep -f "bc_v1_pipeline.sh" > /dev/null; do sleep 600; done
 
 gate() {  # $1 run dir name (e.g. bc_v1)
   local dir=$DATA/runs/$1

@@ -60,6 +60,10 @@ def main() -> int:
     ap.add_argument("--bc-net", required=True)
     ap.add_argument("--v3", action="store_true",
                     help="the net uses the v3 architecture (castle/ep/value buckets)")
+    ap.add_argument("--mirror", action="store_true",
+                    help="score with MirrorAvg: sum a move's score with its file-flip "
+                         "mirror image, mirroring the engine's implementation "
+                         "(castling excluded -- a mirrored position cannot castle)")
     ap.add_argument("--diffu-run", default="")
     ap.add_argument("--ckpt", default="diffu_e1.pt")
     ap.add_argument("--cache", default="")
@@ -108,7 +112,7 @@ def main() -> int:
         legal_n += 1
         n += 1
 
-        greedy = dp.greedy_move(bc, board, v3=args.v3)
+        greedy = dp.greedy_move(bc, board, v3=args.v3, mirror=args.mirror)
         if greedy is not None:
             hits["bc"] += (greedy == want)
         if dnet is not None:

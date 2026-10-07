@@ -146,8 +146,22 @@ def _dev(model):
     return next(model.parameters()).device
 
 
+def _mirror_board(board: chess.Board) -> chess.Board:
+    """File-mirrored position: square s -> s ^ 7, colors and turn unchanged."""
+    m = chess.Board(None)
+    for sq in chess.SQUARES:
+        p = board.piece_at(sq)
+        if p:
+            m.set_piece_at(sq ^ 7, p)
+    m.turn = board.turn
+    # castling rights cannot survive a file mirror (the king would not be on
+    # e1), and the engine clears them in the mirrored view
+    return m
+
+
 @torch.no_grad()
-def greedy_move(bc: ChessNet, board: chess.Board, v3: bool) -> chess.Move | None:
+def greedy_move(bc: ChessNet, board: chess.Board, v3: bool,
+                mirror: bool = False) -> chess.Move | None:
     codes = codes_from_board(board).astype("int64")   # embedding needs int64
     dev = _dev(bc)
     c = torch.from_numpy(codes).unsqueeze(0).to(dev)
@@ -172,12 +186,32 @@ def greedy_move(bc: ChessNet, board: chess.Board, v3: bool) -> chess.Move | None
     scores, promo, _ = bc(c, side, **kw)
     sm = scores[0]          # (64, 64) from -> to, matching the engine's flatten
     pm = promo[0]           # (4,) pooled promotion logits: N, B, R, Q
+    mm = pmm = None
+    if mirror:
+        mboard = _mirror_board(board)
+        mc = torch.from_numpy(codes_from_board(mboard).astype("int64")).unsqueeze(0).to(dev)
+        mkw = {}
+        if kw:
+            mkw = {"castle": torch.zeros_like(kw["castle"])}   # rights cleared, as in the engine
+            if board.ep_square is not None:
+                mkw["ep"] = torch.tensor([(board.ep_square ^ 7) % 8 + 1], device=dev)
+            else:
+                mkw["ep"] = torch.zeros_like(kw["ep"])
+        mscores, mpromo, _ = bc(mc, side, **mkw)
+        mm, pmm = mscores[0], mpromo[0]
     order = {chess.KNIGHT: 0, chess.BISHOP: 1, chess.ROOK: 2, chess.QUEEN: 3}
     best, best_score = None, -1e30
     for mv in board.legal_moves:
         s = float(sm[mv.from_square, mv.to_square])
         if mv.promotion:
             s += float(pm[order[mv.promotion]])
+        if mm is not None and not (abs(chess.square_file(mv.to_square)
+                                       - chess.square_file(mv.from_square)) == 2
+                                   and chess.square_rank(mv.from_square) == 0
+                                   and chess.square_rank(mv.to_square) == 0):
+            s += float(mm[mv.from_square ^ 7, mv.to_square ^ 7])
+            if mv.promotion:
+                s += float(pmm[order[mv.promotion]])
         if s > best_score:
             best, best_score = mv, s
     return best
