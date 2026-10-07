@@ -29,20 +29,29 @@ wait_for_ram() {
 log "=== mixed-depth labeling started ==="
 wait_for_ram 1500
 
-$LO label \
+# Retry loop: --resume makes every attempt continue from the durable record
+# count, so any crash (including a hang that gets killed) costs one batch at
+# most. A deadlocked run cost 13 h of d16 labeling before this existed.
+until $LO label \
   --in $DATA/shards/bc_v1_combined.shard \
   --out $DATA/shards/labeled_d10_4m.shard \
   --sf "$SF" --depth 10 --threads 6 --hash 256 --max-records 2000000 \
   --resume --batch-records 10000 \
-  >> "$LOG" 2>&1
+  >> "$LOG" 2>&1; do
+  log "d10 labeler exited non-zero; resuming from the durable count in 60s"
+  sleep 60
+done
 [ -f "$DATA/shards/labeled_d10_4m.shard" ] || { log "FATAL: d10 stage failed"; exit 1; }
 log "stage 1 complete: labeled_d10_4m.shard"
 
-$LO label \
+until $LO label \
   --in $DATA/shards/bc.shard \
   --out $DATA/shards/labeled_d16_1m.shard \
   --sf "$SF" --depth 16 --threads 6 --hash 256 --max-records 500000 \
   --resume --batch-records 5000 \
-  >> "$LOG" 2>&1
+  >> "$LOG" 2>&1; do
+  log "d16 labeler exited non-zero; resuming from the durable count in 60s"
+  sleep 60
+done
 [ -f "$DATA/shards/labeled_d16_1m.shard" ] || { log "FATAL: d16 stage failed"; exit 1; }
 log "=== mixed-depth labeling complete: both stages ready ==="
