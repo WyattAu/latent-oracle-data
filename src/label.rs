@@ -41,8 +41,9 @@ struct Patch {
 type Analysis = (i64, bool, Vec<(u8, u8, u8)>);
 
 struct Engine {
-    /// Held so the child process lives as long as the pipes; never read.
-    _child: Child,
+    /// Held so the child process lives as long as the pipes, and polled by
+    /// `dead()` so a crashed engine is detected instead of hanging.
+    child: Child,
     stdin: ChildStdin,
     reader: BufReader<ChildStdout>,
 }
@@ -57,7 +58,7 @@ impl Engine {
         let stdin = child.stdin.take().expect("stdin");
         let stdout = child.stdout.take().expect("stdout");
         let mut e = Engine {
-            _child: child,
+            child,
             stdin,
             reader: BufReader::with_capacity(1 << 16, stdout),
         };
@@ -80,6 +81,12 @@ impl Engine {
     fn wait_for(&mut self, token: &str) -> std::io::Result<()> {
         let mut line = String::new();
         loop {
+            if self.dead() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "engine exited during handshake",
+                ));
+            }
             line.clear();
             let n = self.reader.read_line(&mut line)?;
             if n == 0 {
@@ -95,7 +102,25 @@ impl Engine {
     }
 
     /// Analyze the mover-POV position; returns (mover_cp, mate?, pv targets).
+    /// True if the child has already exited (zombie included).
+    ///
+    /// A dead engine does not always produce EOF: Stockfish can leave a forked
+    /// grandchild holding the pipe's write end, so the blocking read below
+    /// never returns and the whole run hangs. That happened on 2026-10-07 --
+    /// six defunct children and 13 h of lost labeling. Checking for an exited
+    /// child before every analysis turns that hang into a normal error, which
+    /// the caller's existing path handles by respawning the engine.
+    fn dead(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(Some(_)))
+    }
+
     fn analyze(&mut self, fen: &str, depth: u16, multipv: u8) -> std::io::Result<Analysis> {
+        if self.dead() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "engine already exited",
+            ));
+        }
         self.send(&format!("position fen {fen}"))?;
         self.send(&format!("go depth {depth}"))?;
 
