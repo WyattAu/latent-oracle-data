@@ -240,6 +240,11 @@ def main():
     ap.add_argument("--lr-ft", type=float, default=1e-4, help="Fine-tuning learning rate")
     ap.add_argument("--gab", action="store_true",
                     help="Geometric Attention Bias (Chessformer GAB-lite) [see --v3 note]")
+    ap.add_argument("--prefetch", action="store_true", default=True,
+                    help="build the next batch on a worker thread while the GPU "
+                         "trains on the current one (default on)")
+    ap.add_argument("--no-prefetch", dest="prefetch", action="store_false",
+                    help="disable batch prefetch")
     ap.add_argument("--state-aware", action="store_true",
                     help="feed the v3 castle/ep embeddings with the record's real "
                          "values. Without this the model is called as model(codes, "
@@ -383,13 +388,32 @@ def main():
                 scheduler = _ParamGroupSched(opt, lambda_lr)
                 print("scheduler: param-group shim (joint Muon/AdamW wrapper)",
                       flush=True)
+    # Batch prefetch. Building a batch is python-side work (record decode,
+    # legal-mask lookup, tensor assembly) and the GPU sat at 36% utilization
+    # waiting for it on the 130M-position run -- i.e. two thirds of the step
+    # time was the data pipeline idling. One worker thread builds the next
+    # batch while the current one trains. Only one thread ever touches the
+    # stream: the worker is a single-slot pool and we submit exactly one batch
+    # ahead, so ordering is preserved.
+    pool = None
+    if args.prefetch:
+        from concurrent.futures import ThreadPoolExecutor
+        pool = ThreadPoolExecutor(max_workers=1)
+
+    def _make_batch(stream_):
+        return build_batch(stream_, args.batch, device, require_targets=True,
+                           mask_sc=mask_sc, quality_filter=args.quality_filter,
+                           tb_labels=tb_labels, state_aware=args.state_aware)
+
     for epoch in range(args.epochs):
         stream = enumerate(iter_records(args.shard))
         done = 0
+        pending = pool.submit(_make_batch, stream) if pool is not None else None
         while True:
-            batch = build_batch(stream, args.batch, device, require_targets=True, mask_sc=mask_sc, quality_filter=args.quality_filter, tb_labels=tb_labels, state_aware=args.state_aware)
+            batch = pending.result() if pending is not None else _make_batch(stream)
             if batch is None:
                 break
+            pending = pool.submit(_make_batch, stream) if pool is not None else None
             codes, side, mask, tgt, evals, labeled, state_kw, res_t, tb = batch
             if args.mirror and torch.rand(1).item() < 0.5:
                 from model import MIRROR_IDX
