@@ -58,6 +58,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--shard", required=True)
     ap.add_argument("--bc-net", required=True)
+    ap.add_argument("--v3", action="store_true",
+                    help="the net uses the v3 architecture (castle/ep/value buckets)")
     ap.add_argument("--diffu-run", default="")
     ap.add_argument("--ckpt", default="diffu_e1.pt")
     ap.add_argument("--cache", default="")
@@ -68,7 +70,7 @@ def main() -> int:
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    bc = ChessNet().to(device)
+    bc = ChessNet(v3=args.v3).to(device)
     bc.load_state_dict(load_artifact(args.bc_net, weights_only=True))
     bc.eval()
 
@@ -106,7 +108,7 @@ def main() -> int:
         legal_n += 1
         n += 1
 
-        greedy = dp.greedy_move(bc, board, v3=False)
+        greedy = dp.greedy_move(bc, board, v3=args.v3)
         if greedy is not None:
             hits["bc"] += (greedy == want)
         if dnet is not None:

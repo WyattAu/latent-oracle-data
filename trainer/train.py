@@ -53,13 +53,22 @@ def legal_mask_and_index(board, targets):
     return mask, target_flat
 
 
-def encode_batch(samples, device):
+def encode_batch(samples, device, state_aware: bool = False):
     codes = torch.from_numpy(np.stack([s.board_codes for s in samples])).long().to(device)
     side = torch.tensor([s.side for s in samples], dtype=torch.long, device=device)
-    return codes, side
+    if not state_aware:
+        return codes, side
+    # v3 index conventions: castle = the raw 4-bit mask; ep = file + 1, with 0
+    # meaning "no ep square" (the shard stores a square index, 255 = none).
+    castle = torch.tensor([int(s.castling) & 15 for s in samples],
+                          dtype=torch.long, device=device)
+    ep = torch.tensor([0 if int(s.ep) == 255 else (int(s.ep) % 8) + 1
+                       for s in samples], dtype=torch.long, device=device)
+    return codes, side, castle, ep
 
 
 def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: MaskSidecar | None = None,
+                state_aware: bool = False,
                 quality_filter: bool = False, tb_labels: dict | None = None):
     """Pull one batch worth of samples with their masks.
 
@@ -125,7 +134,11 @@ def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: Mask
         tb_exact.append(is_tb)
         tb_vt.append(vt if vt is not None else (0.0, 0.0, 0.0))
         fmoves.append(float(s.fullmove))
-    codes, side = encode_batch(samples, device)
+    encoded = encode_batch(samples, device, state_aware=state_aware)
+    codes, side = encoded[0], encoded[1]
+    state_kw = {}
+    if state_aware:
+        state_kw = {"castle": encoded[2], "ep": encoded[3]}
     mask_t = torch.from_numpy(np.stack(masks)).to(device)
     tgt = torch.tensor(tidx, dtype=torch.long, device=device)
     res_t = torch.from_numpy(np.stack([s.wdl for s in samples]).astype(np.float32)).to(device)
@@ -135,9 +148,11 @@ def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: Mask
         vt=torch.tensor(np.stack(tb_vt).astype(np.float32), device=device),
         fm=torch.tensor(fmoves, dtype=torch.float32, device=device),
     )
+    # order must match the unpacking at the call site
     return codes, side, mask_t, tgt, \
         torch.tensor(evals, dtype=torch.float32, device=device), \
-        torch.tensor(labeled, dtype=torch.bool, device=device), res_t, tb
+        torch.tensor(labeled, dtype=torch.bool, device=device), \
+        state_kw, res_t, tb
 
 
 def ensure_mask(args) -> MaskSidecar | None:
@@ -225,6 +240,15 @@ def main():
     ap.add_argument("--lr-ft", type=float, default=1e-4, help="Fine-tuning learning rate")
     ap.add_argument("--gab", action="store_true",
                     help="Geometric Attention Bias (Chessformer GAB-lite) [see --v3 note]")
+    ap.add_argument("--state-aware", action="store_true",
+                    help="feed the v3 castle/ep embeddings with the record's real "
+                         "values. Without this the model is called as model(codes, "
+                         "side), so castle/ep/rating stay pinned at index 0 and "
+                         "their other rows never receive gradient: the fields are "
+                         "silently inert (verified on a real run: 256/4096 nonzero "
+                         "= exactly one trained row). En-passant rights are the "
+                         "genuinely new information here -- the board cannot tell "
+                         "you a pawn just moved two squares.")
     ap.add_argument("--v3", action="store_true",
                     help="v3 architecture (SPEC-BLOB-V3.md): castle/ep/king/rating inputs, "
                          "HiCo history, material-bucketed value head. Implies --gab layout. "
@@ -363,10 +387,10 @@ def main():
         stream = enumerate(iter_records(args.shard))
         done = 0
         while True:
-            batch = build_batch(stream, args.batch, device, require_targets=True, mask_sc=mask_sc, quality_filter=args.quality_filter, tb_labels=tb_labels)
+            batch = build_batch(stream, args.batch, device, require_targets=True, mask_sc=mask_sc, quality_filter=args.quality_filter, tb_labels=tb_labels, state_aware=args.state_aware)
             if batch is None:
                 break
-            codes, side, mask, tgt, evals, labeled, res_t, tb = batch
+            codes, side, mask, tgt, evals, labeled, state_kw, res_t, tb = batch
             if args.mirror and torch.rand(1).item() < 0.5:
                 from model import MIRROR_IDX
                 codes = codes.view(-1, 64)[:, MIRROR_IDX.to(codes.device)]
@@ -375,7 +399,7 @@ def main():
                 tgt = MIRROR_IDX.to(tgt.device)[u] * 64 + MIRROR_IDX.to(tgt.device)[v]
             with torch.autocast("cuda", dtype=torch.float16, enabled=device == "cuda"):
                 if args.recycle > 1:
-                    passes = model.forward_recycle(codes, side, R=args.recycle)
+                    passes = model.forward_recycle(codes, side, R=args.recycle, **state_kw)
                     scores, promo, wdl = passes[-1]
                     # RCT: pull earlier passes toward the stop-grad final policy
                     rct = scores.new_zeros(())
@@ -388,7 +412,7 @@ def main():
                                              log_target=True, reduction="batchmean")
                     rct = rct / (len(passes) - 1)
                 else:
-                    scores, promo, wdl = model(codes, side)
+                    scores, promo, wdl = model(codes, side, **state_kw)
                     rct = scores.new_zeros(())
                 flat = scores.reshape(codes.shape[0], 64 * 64)
                 flat = flat.masked_fill(~mask.reshape(codes.shape[0], -1), float("-inf"))

@@ -153,8 +153,21 @@ def greedy_move(bc: ChessNet, board: chess.Board, v3: bool) -> chess.Move | None
     c = torch.from_numpy(codes).unsqueeze(0).to(dev)
     side = torch.tensor([0 if board.turn else 1], device=dev)
     kw = {}
-    if v3:
-        kw = {"castle": torch.zeros(1, dtype=torch.long), "ep": torch.zeros(1, dtype=torch.long)}
+    if v3 or getattr(bc, "v3", False):
+        # real v3 state, matching train.py --state-aware: castle is the raw
+        # 4-bit mask, ep is file+1 with 0 meaning "none"
+        castle = 0
+        if board.has_castling_rights(chess.WHITE) and board.occupied_co[chess.WHITE] & chess.BB_H1:
+            castle |= 1
+        if board.has_castling_rights(chess.WHITE) and board.occupied_co[chess.WHITE] & chess.BB_A1:
+            castle |= 2
+        if board.has_castling_rights(chess.BLACK) and board.occupied_co[chess.BLACK] & chess.BB_H8:
+            castle |= 4
+        if board.has_castling_rights(chess.BLACK) and board.occupied_co[chess.BLACK] & chess.BB_A8:
+            castle |= 8
+        ep = 0 if board.ep_square is None else (board.ep_square % 8) + 1
+        kw = {"castle": torch.tensor([castle], device=dev),
+              "ep": torch.tensor([ep], device=dev)}
     kw = {k: v.to(dev) for k, v in kw.items()}
     scores, promo, _ = bc(c, side, **kw)
     sm = scores[0]          # (64, 64) from -> to, matching the engine's flatten
