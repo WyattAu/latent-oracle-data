@@ -74,7 +74,15 @@ gate() {  # $1 run dir name (e.g. bc_v1)
             | tail -1 | grep -oE '[-0-9.]+')
       best_elo=$(echo "$best_txt" | sed 's/, nElo:.*//' | grep -oE 'Elo: [-0-9.]+' \
             | tail -1 | grep -oE '[-0-9.]+')
-      if [ -z "$best_txt" ] || [ "${elo:--9999}" -gt "${best_elo:--9999}" ]; then
+      # Compare as FLOATS. `[ -26.78 -gt -112.33 ]` is bash integer arithmetic:
+      # it errors on the decimals, the test goes false, and the FIRST epoch
+      # wins every time -- which silently published net_e0 (-112) over
+      # net_e1 (-27) as the AV warm-start.
+      local better=0
+      if [ -n "$best_elo" ]; then
+        better=$(awk -v a="${elo:--9999}" -v b="$best_elo" 'BEGIN {print (a > b) ? 1 : 0}')
+      fi
+      if [ -z "$best_txt" ] || [ "$better" = "1" ]; then
         best_txt="$res"; best_blob=$blob
       fi
     else
