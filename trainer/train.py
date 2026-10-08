@@ -68,7 +68,8 @@ def encode_batch(samples, device, state_aware: bool = False):
 
 
 def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: MaskSidecar | None = None,
-                state_aware: bool = False,
+                state_aware: bool = False, volatility_weight: float = 1.0,
+                volatility_threshold: int = 150,
                 quality_filter: bool = False, tb_labels: dict | None = None):
     """Pull one batch worth of samples with their masks.
 
@@ -139,6 +140,21 @@ def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: Mask
     state_kw = {}
     if state_aware:
         state_kw = {"castle": encoded[2], "ep": encoded[3]}
+    # Volatility: |eval delta| vs the previous ply. Records are in game order,
+    # so consecutive records are usually consecutive plies; at a game boundary
+    # the delta is meaningless (affecting ~the number of games / records, a few
+    # percent) — acceptable noise for a loss weight.
+    volat = None
+    if volatility_weight != 1.0:
+        evs = [float(s_.eval_cp) for s_ in samples]
+        sides = [int(s_.side) for s_ in samples]
+        flags = [0.0]
+        for i in range(1, len(samples)):
+            if sides[i] != sides[i - 1]:
+                flags.append(1.0 if abs(evs[i] - evs[i - 1]) >= volatility_threshold else 0.0)
+            else:
+                flags.append(0.0)   # boundary: side must alternate in a real game
+        volat = flags
     mask_t = torch.from_numpy(np.stack(masks)).to(device)
     tgt = torch.tensor(tidx, dtype=torch.long, device=device)
     res_t = torch.from_numpy(np.stack([s.wdl for s in samples]).astype(np.float32)).to(device)
@@ -149,10 +165,12 @@ def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: Mask
         fm=torch.tensor(fmoves, dtype=torch.float32, device=device),
     )
     # order must match the unpacking at the call site
+    volat_t = (torch.tensor(volat, dtype=torch.float32, device=device)
+               if volat is not None else torch.zeros(0, device=device))
     return codes, side, mask_t, tgt, \
         torch.tensor(evals, dtype=torch.float32, device=device), \
         torch.tensor(labeled, dtype=torch.bool, device=device), \
-        state_kw, res_t, tb
+        state_kw, volat_t, res_t, tb
 
 
 def ensure_mask(args) -> MaskSidecar | None:
@@ -240,6 +258,14 @@ def main():
     ap.add_argument("--lr-ft", type=float, default=1e-4, help="Fine-tuning learning rate")
     ap.add_argument("--gab", action="store_true",
                     help="Geometric Attention Bias (Chessformer GAB-lite) [see --v3 note]")
+    ap.add_argument("--volatility-weight", type=float, default=1.0,
+                    help="upweight positions whose eval swung vs the previous ply "
+                         "(weight W when |delta| >= threshold, else 1.0). W=1.0 "
+                         "disables. Targets the measured bottleneck: losses are "
+                         "dominated by tactical collapses (RESULTS.md, loss "
+                         "attribution). Only meaningful with --decisive-weighting.")
+    ap.add_argument("--volatility-threshold", type=int, default=150,
+                    help="eval delta (cp) above which a position counts as volatile")
     ap.add_argument("--prefetch", action="store_true", default=True,
                     help="build the next batch on a worker thread while the GPU "
                          "trains on the current one (default on)")
@@ -403,7 +429,9 @@ def main():
     def _make_batch(stream_):
         return build_batch(stream_, args.batch, device, require_targets=True,
                            mask_sc=mask_sc, quality_filter=args.quality_filter,
-                           tb_labels=tb_labels, state_aware=args.state_aware)
+                           tb_labels=tb_labels, state_aware=args.state_aware,
+                           volatility_weight=args.volatility_weight,
+                           volatility_threshold=args.volatility_threshold)
 
     for epoch in range(args.epochs):
         stream = enumerate(iter_records(args.shard))
@@ -414,7 +442,7 @@ def main():
             if batch is None:
                 break
             pending = pool.submit(_make_batch, stream) if pool is not None else None
-            codes, side, mask, tgt, evals, labeled, state_kw, res_t, tb = batch
+            codes, side, mask, tgt, evals, labeled, state_kw, volat, res_t, tb = batch
             if args.mirror and torch.rand(1).item() < 0.5:
                 from model import MIRROR_IDX
                 codes = codes.view(-1, 64)[:, MIRROR_IDX.to(codes.device)]
@@ -460,6 +488,11 @@ def main():
                         pw_weight = pw_weight * ow
                     if tb_labels:
                         pw_weight = torch.where(tb["exact"], tb["pol_w"], pw_weight)
+                    if volat.numel():
+                        pw_weight = pw_weight * torch.where(
+                            volat > 0,
+                            torch.full_like(volat, args.volatility_weight),
+                            torch.ones_like(volat))
                     pl = (pl_raw * pw_weight).sum() / pw_weight.sum().clamp(min=1.0)
                 else:
                     pl = pl_raw.mean()
