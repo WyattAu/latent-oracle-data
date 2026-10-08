@@ -276,13 +276,22 @@ def main():
             blp = F.log_softmax(bflat[j] + mask, dim=-1)
             a = acts[j].to(device)
             logps.append(lp[a])
-            kls.append((blp.exp() * (blp - lp)).sum())  # KL(base || new)
+            # KL(base || new) over legal moves only. Both log-probs are -inf
+            # on illegal squares (shared mask), so the naive term is
+            # 0 * (-inf - -inf) = NaN, which poisoned the loss from the very
+            # first update (pg nan kl nan) and destroyed the weights.
+            kl_terms = blp.exp() * (blp - lp)
+            kls.append(torch.nan_to_num(kl_terms, nan=0.0).sum())
         if not logps:
             continue
         new_logp = torch.stack(logps)
         old_logp = torch.stack([base_logp[j] for j in sel]).to(device)
         adv_sel = torch.stack([adv[j * args.k:(j + 1) * args.k] for j in sel]).to(device)
-        ratio = torch.exp(new_logp - old_logp.to(device))
+        # Padded slots carry -inf in BOTH log-probs (dummy index 0 is masked),
+        # so their ratio is exp(-inf - -inf) = NaN. Their advantage is 0, so
+        # zeroing the NaN ratio makes them contribute exactly nothing.
+        ratio = torch.nan_to_num(
+            torch.exp(new_logp - old_logp.to(device)), nan=0.0)
         s1 = ratio * adv_sel
         s2 = torch.clamp(ratio, 1 - args.clip, 1 + args.clip) * adv_sel
         pg = -torch.min(s1, s2).mean()
