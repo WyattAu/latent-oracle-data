@@ -32,7 +32,7 @@
         "additional_lines_rgx": [],
         "event_name": "Fastchess Tournament",
         "site": "?",
-        "file": "/home/wyatt/data/sprt/amz-vs-bc.pgn",
+        "file": "/home/wyatt/data/sprt/av-s2-vs-s1.pgn",
         "notation": 0,
         "append_file": true,
         "track_nodes": false,
@@ -60,7 +60,7 @@
     },
     "config_name": "config.json",
     "output": 0,
-    "seed": 2635116803839047976,
+    "seed": 11532326042324465398,
     "variant": 0,
     "type": 0,
     "gauntlet_seeds": 1,
@@ -69,8 +69,8 @@
     "wait": 0,
     "autosaveinterval": 20,
     "games": 2,
-    "rounds": 200,
-    "concurrency": 6,
+    "rounds": 150,
+    "concurrency": 4,
     "force_concurrency": false,
     "recover": false,
     "noswap": false,
@@ -89,7 +89,7 @@
     },
     "engines": [
         {
-            "name": "bc-v1-e2",
+            "name": "av-stage1",
             "dir": "",
             "cmd": "/home/wyatt/dev/src/github.com/WyattAu/latent-oracle/build/release/latent-oracle",
             "args": "",
@@ -97,7 +97,7 @@
             "options": [
                 [
                     "WeightsFile",
-                    "/home/wyatt/data/runs/bc_v1/net_e2.bin"
+                    "/home/wyatt/data/runs/av_v3/av_e1.bin"
                 ]
             ],
             "limit": {
@@ -114,7 +114,7 @@
             "variant": 0
         },
         {
-            "name": "amz-e0",
+            "name": "av-stage2",
             "dir": "",
             "cmd": "/home/wyatt/dev/src/github.com/WyattAu/latent-oracle/build/release/latent-oracle",
             "args": "",
@@ -122,7 +122,7 @@
             "options": [
                 [
                     "WeightsFile",
-                    "/home/wyatt/data/runs/amz_pilot/amz_e0.bin"
+                    "/home/wyatt/data/runs/av_v3_s2/av_e1.bin"
                 ]
             ],
             "limit": {
@@ -140,16 +140,16 @@
         }
     ],
     "stats": {
-        "bc-v1-e2 vs amz-e0": {
-            "wins": 25,
-            "losses": 5,
-            "draws": 48,
-            "penta_WW": 4,
-            "penta_WD": 14,
-            "penta_WL": 3,
-            "penta_DD": 16,
-            "penta_LD": 2,
-            "penta_LL": 0
+        "av-stage1 vs av-stage2": {
+            "wins": 57,
+            "losses": 73,
+            "draws": 170,
+            "penta_WW": 3,
+            "penta_WD": 32,
+            "penta_WL": 19,
+            "penta_DD": 50,
+            "penta_LD": 38,
+            "penta_LL": 8
         }
     }
 }

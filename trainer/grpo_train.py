@@ -213,8 +213,16 @@ def main():
         if f is None:
             continue
         _, umap = moves_per[j]
+        # actions are padded to exactly k with the dummy index 0 (a1->a1 is
+        # never legal by construction), so the legality check must skip the
+        # padding rather than assert on it -- the gate used to fail here on
+        # every position with fewer than k legal moves.
+        n_real = sum(1 for a in acts[j] if int(a) in umap)
         for a in acts[j]:
+            if int(a) == 0:
+                continue
             assert int(a) in umap, f"sampled action not legal: {int(a)}"
+        assert n_real >= 1, f"group {j}: no legal action survived sampling"
     print("validation gate PASSED (50 groups: legality)", flush=True)
 
     # ---- training loop
