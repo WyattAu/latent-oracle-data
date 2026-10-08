@@ -227,6 +227,7 @@ def main():
 
     # ---- training loop
     step = 0
+    skipped = 0
     rng_local = random.Random(7)
     while step < args.steps:
         fens, moves_per, acts, base_logp, (bc, bs, castles, eps) = build_step(rng_local)
@@ -298,6 +299,14 @@ def main():
         kl = torch.stack(kls).mean()
         z = (flat.logsumexp(dim=-1) ** 2).mean() * 1e-3
         loss = pg + args.kl_beta * kl + z
+        if not torch.isfinite(loss):
+            # A single non-finite update NaNs every weight permanently; skip it
+            # and keep training. The GRPO loss can still spike when a group's
+            # rewards are near-constant (adv = 0/1e-6 paths) or a ratio blows
+            # up before clipping.
+            opt.zero_grad(set_to_none=True)
+            skipped += 1
+            continue
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -305,10 +314,16 @@ def main():
         step += 1
         if step % 5 == 0:
             print(f"step {step}: pg {pg.item():.4f} kl {kl.item():.4f} "
-                  f"r_mean {rewards.mean().item():.3f}", flush=True)
+                  f"r_mean {rewards.mean().item():.3f} skipped {skipped}",
+                  flush=True)
         if step % args.export_every == 0 or step == args.steps:
-            save_atomic(model.state_dict(), os.path.join(args.out, f"grpo_s{step}.pt"))
-            model.export_blob(os.path.join(args.out, f"grpo_s{step}.bin"))
+            finite = all(torch.isfinite(p).all() for p in model.parameters())
+            if not finite:
+                print(f"step {step}: weights not finite -- checkpoint NOT saved",
+                      flush=True)
+            else:
+                save_atomic(model.state_dict(), os.path.join(args.out, f"grpo_s{step}.pt"))
+                model.export_blob(os.path.join(args.out, f"grpo_s{step}.bin"))
             print(f"exported {args.out}/grpo_s{step}.pt/.bin", flush=True)
 
     for e in engines:

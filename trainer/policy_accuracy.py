@@ -113,7 +113,12 @@ def main() -> int:
         n += 1
 
         greedy = dp.greedy_move(bc, board, v3=args.v3, mirror=args.mirror)
-        if greedy is not None:
+        if greedy is None:
+            # count "no legal move returned" as a miss rather than skipping:
+            # a net that returns None everywhere would otherwise vanish from
+            # its own score (a 0/500 read as an empty denominator).
+            hits["bc"] += 0
+        else:
             hits["bc"] += (greedy == want)
         if dnet is not None:
             import random as _r
