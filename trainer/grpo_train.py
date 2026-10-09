@@ -253,7 +253,26 @@ def main():
     print("validation gate PASSED (50 groups: legality)", flush=True)
 
     # ---- training loop
+    # Resume from the newest checkpoint in --out if one exists. Optimizer
+    # moments are not saved, so the schedule restarts -- acceptable: the KL
+    # and clip penalties keep a cold optimizer stable, and resume exists so a
+    # watchdog-killed run continues instead of restarting from step 0 (the
+    # shared box dies mid-run routinely; losing 1000 steps each time is what
+    # makes the run unfinishable, not the loss of Adam moments).
     step = 0
+    done = sorted(
+        (f for f in os.listdir(args.out) if f.startswith("grpo_s") and f.endswith(".pt")),
+        key=lambda f: int(f[6:-3]))
+    if done:
+        prev = int(done[-1][6:-3])
+        sd = load_artifact(os.path.join(args.out, done[-1]), map_location=device)
+        model.load_state_dict(sd)
+        if prev >= args.steps:
+            print(f"resume: checkpoint at step {prev} >= {args.steps}; nothing to do",
+                  flush=True)
+            return
+        step = prev
+        print(f"resume: continuing from {done[-1]} (step {step})", flush=True)
     t_start = time.time()
     skipped = 0
     rng_local = random.Random(7)

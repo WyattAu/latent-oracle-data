@@ -61,9 +61,17 @@ wait_for_idle_box() {
   done
 }
 
+# GPU gate: free VRAM alone is not enough -- sibling CUDA contexts add
+# seconds-to-minutes of latency to every kernel launch (measured: a probe
+# step took 35+ min with the GPU shared vs 0.1 ms/op in isolation). Require
+# a GPU with no foreign compute processes at all.
+gpu_foreign_procs() { nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | wc -l; }
+
 log "=== GRPO phase armed (waits av_phase) ==="
 while pgrep -f "av_phase.sh" > /dev/null; do sleep 600; done
-while [ "$(gpu_free_mb)" -lt 3600 ]; do sleep 300; done
+while [ "$(gpu_free_mb)" -lt 3600 ] || [ "$(gpu_foreign_procs)" -ne 0 ]; do
+  sleep 300
+done
 wait_for_idle_box 3000 50 6
 cd "$TR" || exit 1
 
@@ -76,6 +84,10 @@ BASE_BIN=$DATA/runs/av_v3_s2/av_e1.bin
 # Depth = 10: measured 14.1 ms/analysis vs 78.4 at d12 (5.6x). Reward quality
 # needs consistency, not the last 20 Elo of evaluator strength; d12 makes the
 # run 67h of engine time, which this shared box never delivers. d10 is ~12h.
+# Fresh per-run log: the watchdog counts '^step' lines, which must mean
+# THIS run's progress, not history (grpo.log holds 600+ stale step lines).
+TLOG=$DATA/grpo_train.log
+
 log "GRPO training (1500 steps, groups=128, K=16, SF depth 10, d16 shard)"
 $PY grpo_train.py \
   --net $BASE_PT \
@@ -83,8 +95,28 @@ $PY grpo_train.py \
   --out $DATA/runs/grpo_v1 \
   --v3 \
   --groups 128 --k 16 --steps 1500 --depth 10 --reward-clip 300 \
-  --lr 1e-5 --kl-beta 0.03 --clip 0.2 --export-every 500 \
-  --sf-pool 4 >> "$LOG" 2>&1
+  --lr 1e-5 --kl-beta 0.03 --clip 0.2 --export-every 100 \
+  --sf-pool 4 > "$TLOG" 2>&1 &
+TRAIN_PID=$!
+# Step-rate watchdog: the box degrades mid-run without warning (sibling
+# sessions drive load 40+, swap storms, GPU sharing -- measured, a step then
+# takes hours). export-every 100 + resume mean a watchdog kill loses at most
+# 100 steps, and a re-armed phase continues from the newest checkpoint
+# instead of restarting at 0. 90 min of silence => kill.
+STALL_SECS=$((90 * 60))
+last=$(grep -cE '^step' "$TLOG"); quiet=0
+while kill -0 "$TRAIN_PID" 2>/dev/null; do
+  sleep 60; quiet=$((quiet + 60))
+  now=$(grep -cE '^step' "$TLOG")
+  if [ "$now" -gt "$last" ]; then last=$now; quiet=0; fi
+  if [ "$quiet" -ge "$STALL_SECS" ]; then
+    log "WATCHDOG: no step line in 90min -- killing train pid $TRAIN_PID (checkpoints persist)"
+    kill -9 "$TRAIN_PID" 2>/dev/null
+    break
+  fi
+done
+wait "$TRAIN_PID" 2>/dev/null
+tail -3 "$TLOG" >> "$LOG"
 [ -f "$DATA/runs/grpo_v1/grpo_s1500.pt" ] || FINAL=$(ls -t $DATA/runs/grpo_v1/grpo_s*.pt 2>/dev/null | head -1)
 FINAL=${FINAL:-$DATA/runs/grpo_v1/grpo_s1500.pt}
 [ -f "$FINAL" ] || { log "FATAL: GRPO produced no checkpoint"; exit 1; }
