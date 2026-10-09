@@ -265,8 +265,8 @@ def main():
         key=lambda f: int(f[6:-3]))
     if done:
         prev = int(done[-1][6:-3])
-        sd = load_artifact(os.path.join(args.out, done[-1]), map_location=device)
-        model.load_state_dict(sd)
+        model.load_state_dict(load_artifact(os.path.join(args.out, done[-1]),
+                                            weights_only=True))
         if prev >= args.steps:
             print(f"resume: checkpoint at step {prev} >= {args.steps}; nothing to do",
                   flush=True)
