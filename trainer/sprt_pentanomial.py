@@ -38,13 +38,24 @@ def main():
 
     rounds = defaultdict(list)  # round -> [score of engine1's game]
     order = []
+    engine1 = None
     with open(args.pgn) as f:
         while True:
             g = chess.pgn.read_game(f)
             if g is None:
                 break
+            # engine1 = the player who is White in the FIRST game (fastchess
+            # pairs by swapping colors within a round). The old code scored
+            # every game from White's perspective and never checked which
+            # engine held which color, so on av-s2-vs-s1 it reported White's
+            # 51% instead of stage2's 52.67% -- +6.9 Elo where the true
+            # game-level answer was +18.55.
+            if engine1 is None:
+                engine1 = g.headers.get("White", "?")
             rnd = g.headers.get("Round", "?")
-            res = SCORE.get(g.headers.get("Result", "*"), 0.5)
+            r = SCORE.get(g.headers.get("Result", "*"), 0.5)
+            white_pts = r
+            res = white_pts if g.headers.get("White") == engine1 else 1.0 - white_pts
             if rnd not in rounds:
                 order.append(rnd)
             rounds[rnd].append(res)
