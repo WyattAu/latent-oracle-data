@@ -34,9 +34,35 @@ wait_for_ram() {
   log "ram ok: $(ram_avail_mb)MB available (needed ${need}MB)"
 }
 
+# --- box-idleness gate (2026-10-09). wait_for_ram() is not enough: MemAvailable
+# can look tolerable while the machine is thrashing. Measured failure was
+# load 41, 0% CPU idle, 363MB free RAM, 31.5/32GB SWAP USED, driven by sibling
+# agent sessions. GRPO then ran at ~21s of CPU per 4min of wall time -- 21 min
+# for one step, silently. Launching into that state wastes days and looks like a
+# bug rather than contention, so refuse to start and wait for a real window.
+swap_used_mb() { awk '/SwapTotal/ {t=$2} /SwapFree/ {f=$2} END {print int((t-f)/1024)}' /proc/meminfo; }
+swap_total_mb() { awk '/SwapTotal/ {print int($2/1024)}' /proc/meminfo; }
+load1() { awk '{print int($1)}' /proc/loadavg; }
+wait_for_idle_box() {
+  local need_ram=${1:-3000} need_swap=${2:-2000} need_load=${3:-6} waited=0
+  while :; do
+    local a s l
+    a=$(ram_avail_mb); s=$(swap_used_mb); l=$(load1)
+    if [ "$a" -ge "$need_ram" ] && [ "$s" -le "$need_swap" ] && [ "$l" -le "$need_load" ]; then
+      log "box ok: ram ${a}MB, swap ${s}MB used, load ${l}"
+      return 0
+    fi
+    if [ $((waited % 1800)) -eq 0 ]; then
+      log "box busy: ram ${a}MB (need ${need_ram}), swap ${s}MB used (need <=${need_swap}), load ${l} (need <=${need_load}); waiting"
+    fi
+    sleep 300; waited=$((waited+300))
+  done
+}
+
 log "=== GRPO phase armed (waits av_phase) ==="
 while pgrep -f "av_phase.sh" > /dev/null; do sleep 600; done
 while [ "$(gpu_free_mb)" -lt 3600 ]; do sleep 300; done
+wait_for_idle_box 3000 2000 6
 cd "$TR" || exit 1
 
 BASE_PT=$DATA/runs/av_v3_s2/net_e1.pt
