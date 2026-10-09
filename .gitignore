@@ -3,3 +3,6 @@
 *.pgn
 *.pgn.zst
 *.log
+__pycache__/
+*.pyc
+trainer/config.json

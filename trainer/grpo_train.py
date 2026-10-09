@@ -22,6 +22,8 @@ import random
 import sys
 
 import numpy as np
+import time
+
 import torch
 import torch.nn.functional as F
 
@@ -50,19 +52,34 @@ class SFEval:
         self.p.stdin.write(cmd + "\n")
         self.p.stdin.flush()
 
+    def _alive(self):
+        """True while the engine process is usable. A dead engine's stdout
+        stays open whenever a forked grandchild inherits the pipe, so the
+        blocking readline below can hang FOREVER -- that is how the first
+        production GRPO launch sat for 8 h without reaching step 5. Checking
+        the child before every read turns that hang into an exception, which
+        the caller's respawn path handles."""
+        return self.p.poll() is None
+
     def _sync(self):
         self._send("isready")
         while True:
+            if not self._alive():
+                raise RuntimeError("SF engine exited during handshake")
             line = self.p.stdout.readline()
             if line.startswith("readyok"):
                 return
 
     def eval_cp(self, fen: str) -> int:
         """Centipawn score from the side to move's perspective."""
+        if not self._alive():
+            raise RuntimeError("SF engine exited before analysis")
         self._send(f"position fen {fen}")
         self._send(f"go depth {self.depth}")
         cp, mate = 0, 0
         while True:
+            if not self._alive():
+                raise RuntimeError("SF engine died mid-analysis")
             line = self.p.stdout.readline()
             if line.startswith("bestmove"):
                 break
@@ -149,7 +166,17 @@ def main():
     print(f"SF pool: {n_sf} engines @ depth {args.depth}", flush=True)
 
     def reward_of(child_fen: str, i: int) -> float:
-        cp = engines[i % n_sf].eval_cp(child_fen)
+        nonlocal engines
+        e = engines[i % n_sf]
+        try:
+            cp = e.eval_cp(child_fen)
+        except RuntimeError as exc:
+            # dead/desynced engine: replace it and score this move 0 rather
+            # than blocking forever (the 8-hour hang of the first launch)
+            print(f"SF pool: engine {i % n_sf} failed ({exc}); respawning",
+                  flush=True)
+            engines[i % n_sf] = SFEval(args.sf, depth=args.depth)
+            return 0.0
         return max(-1.0, min(1.0, cp / args.reward_clip))
 
     def build_step(rng_local):
@@ -227,6 +254,7 @@ def main():
 
     # ---- training loop
     step = 0
+    t_start = time.time()
     skipped = 0
     rng_local = random.Random(7)
     while step < args.steps:
@@ -312,10 +340,12 @@ def main():
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
         step += 1
-        if step % 5 == 0:
-            print(f"step {step}: pg {pg.item():.4f} kl {kl.item():.4f} "
-                  f"r_mean {rewards.mean().item():.3f} skipped {skipped}",
-                  flush=True)
+        # Log EVERY step: with 1024+ depth-10 analyses per step on a shared
+        # box a single step can take over an hour, so a 5-step print interval
+        # looks identical to a hang.
+        print(f"step {step}: pg {pg.item():.4f} kl {kl.item():.4f} "
+              f"r_mean {rewards.mean().item():.3f} skipped {skipped} "
+              f"elapsed {(time.time() - t_start) / 60:.1f}m", flush=True)
         if step % args.export_every == 0 or step == args.steps:
             finite = all(torch.isfinite(p).all() for p in model.parameters())
             if not finite:
