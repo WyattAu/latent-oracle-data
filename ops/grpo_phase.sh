@@ -104,6 +104,7 @@ TRAIN_PID=$!
 # 100 steps, and a re-armed phase continues from the newest checkpoint
 # instead of restarting at 0. 90 min of silence => kill.
 STALL_SECS=$((90 * 60))
+INCOMPLETE=0
 last=$(grep -cE '^step' "$TLOG"); quiet=0
 while kill -0 "$TRAIN_PID" 2>/dev/null; do
   sleep 60; quiet=$((quiet + 60))
@@ -112,11 +113,19 @@ while kill -0 "$TRAIN_PID" 2>/dev/null; do
   if [ "$quiet" -ge "$STALL_SECS" ]; then
     log "WATCHDOG: no step line in 90min -- killing train pid $TRAIN_PID (checkpoints persist)"
     kill -9 "$TRAIN_PID" 2>/dev/null
+    INCOMPLETE=1
     break
   fi
 done
 wait "$TRAIN_PID" 2>/dev/null
 tail -3 "$TLOG" >> "$LOG"
+# A watchdog kill leaves partial checkpoints. SPRT-ing a 700/1500-step net
+# would put a verdict on an unfinished experiment -- refuse, and let a
+# re-armed phase resume from the newest checkpoint instead.
+if [ "$INCOMPLETE" = 1 ]; then
+  log "FATAL: training incomplete (watchdog kill) -- no SPRTs; re-arm to resume"
+  exit 1
+fi
 [ -f "$DATA/runs/grpo_v1/grpo_s1500.pt" ] || FINAL=$(ls -t $DATA/runs/grpo_v1/grpo_s*.pt 2>/dev/null | head -1)
 FINAL=${FINAL:-$DATA/runs/grpo_v1/grpo_s1500.pt}
 [ -f "$FINAL" ] || { log "FATAL: GRPO produced no checkpoint"; exit 1; }
