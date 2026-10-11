@@ -51,6 +51,7 @@ done
 wait_for_idle_box 3000 2048 24
 
 log "AV s3: d16 RCT/QAT fine-tune from stage-1, FULL TB sidecar (3,728 labels)"
+cd "$TR" || exit 1
 $PY train.py \
   --shard $DATA/shards/labeled_d16_1m.shard \
   --out $DATA/runs/av_v3_s3 \
