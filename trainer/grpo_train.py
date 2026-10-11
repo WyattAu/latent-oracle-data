@@ -275,6 +275,7 @@ def main():
         print(f"resume: continuing from {done[-1]} (step {step})", flush=True)
     t_start = time.time()
     skipped = 0
+    consec_skips = 0
     rng_local = random.Random(7)
     while step < args.steps:
         fens, moves_per, acts, base_logp, (bc, bs, castles, eps) = build_step(rng_local)
@@ -347,15 +348,42 @@ def main():
         z = (flat.logsumexp(dim=-1) ** 2).mean() * 1e-3
         loss = pg + args.kl_beta * kl + z
         if not torch.isfinite(loss):
-            # A single non-finite update NaNs every weight permanently; skip it
-            # and keep training. The GRPO loss can still spike when a group's
-            # rewards are near-constant (adv = 0/1e-6 paths) or a ratio blows
-            # up before clipping.
+            # A single bad update NaNs every weight permanently, and NaN
+            # weights make EVERY later loss non-finite: this skip path would
+            # then repeat forever -- build_step, rewards, non-finite,
+            # continue -- consuming SF evals forever without ever
+            # incrementing step (the "one step in 7 hours" incident). The
+            # consecutive-skip FATAL turns that silent grind into a loud
+            # abort; the gradient guard below stops the corruption at the
+            # source so the loop stays rare.
             opt.zero_grad(set_to_none=True)
             skipped += 1
+            consec_skips += 1
+            if consec_skips >= 100:
+                print(f"FATAL: {consec_skips} consecutive non-finite losses -- "
+                      f"weights or reward data are corrupted; aborting instead "
+                      f"of grinding forever", flush=True)
+                return
             continue
         opt.zero_grad(set_to_none=True)
         loss.backward()
+        # A finite loss can still have NaN gradients (one inf*0 inside the
+        # graph is enough). clip_grad_norm_ would scale every gradient by a
+        # NaN factor and opt.step() would corrupt the weights -- exactly the
+        # permanent-skip loop above. Refuse the update: weights stay finite
+        # and the next batch gets a clean chance.
+        if not all(torch.isfinite(p.grad).all()
+                   for p in model.parameters() if p.grad is not None):
+            opt.zero_grad(set_to_none=True)
+            skipped += 1
+            consec_skips += 1
+            if consec_skips >= 100:
+                print(f"FATAL: {consec_skips} consecutive non-finite gradient "
+                      f"batches -- refusing to corrupt the weights; aborting",
+                      flush=True)
+                return
+            continue
+        consec_skips = 0
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
         step += 1
