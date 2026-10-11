@@ -39,6 +39,7 @@ def main():
     rounds = defaultdict(list)  # round -> [score of engine1's game]
     order = []
     engine1 = None
+    both_names = None
     with open(args.pgn) as f:
         while True:
             g = chess.pgn.read_game(f)
@@ -52,6 +53,7 @@ def main():
             # game-level answer was +18.55.
             if engine1 is None:
                 engine1 = g.headers.get("White", "?")
+                both_names = (engine1, g.headers.get("Black", "?"))
             rnd = g.headers.get("Round", "?")
             r = SCORE.get(g.headers.get("Result", "*"), 0.5)
             white_pts = r
@@ -70,6 +72,9 @@ def main():
     if n == 0:
         print("no paired rounds found")
         return
+    if both_names:
+        print(f"engine1 (White of game 1) = {both_names[0]}; "
+              f"opponent = {both_names[1]}")
     # five bins: WW, WD, WL(split), LD, LL
     ww, wd, wl, ld, ll = (counts["WW"], counts["WD"], counts["split(WL or LD-sym)"],
                           counts["LD"], counts["LL"])
