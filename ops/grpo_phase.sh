@@ -80,11 +80,13 @@ done
 # 180 min to match the accepted slower pace; resume bounds any kill to <=100
 # lost steps.
 # 2026-10-11: the sibling sessions' PERSISTENT baseline thrash is
-# ~4,500-5,200 KB/s -- the 2048 gate waited days. The catastrophic storms
-# measured 16-54 MB/s, an order of magnitude above the baseline; a 6 MB/s
-# ceiling admits the baseline while still refusing the storms. The watchdog
-# + resume + NaN guards bound whatever the baseline costs.
-wait_for_idle_box 3000 6144 24
+# ~4,500-5,200 KB/s -- the 2048 gate waited days. Raising to 6144 still
+# waited: storms arrive every few minutes and the 5-min samples kept
+# landing inside them. The trainer is now storm-resilient (NaN-grad guard,
+# CPU-fallback update, watchdog, resume), so the pre-launch thrash gate
+# only delayed launches without protecting anything. Thrash condition
+# dropped; load <= 24 and ram >= 3000MB remain.
+wait_for_idle_box 3000 999999 24
 cd "$TR" || exit 1
 
 BASE_PT=$DATA/runs/av_v3_s2/net_e1.pt
