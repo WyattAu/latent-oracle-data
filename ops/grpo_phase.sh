@@ -69,10 +69,17 @@ gpu_foreign_procs() { nvidia-smi --query-compute-apps=pid --format=csv,noheader 
 
 log "=== GRPO phase armed (waits av_phase) ==="
 while pgrep -f "av_phase.sh" > /dev/null; do sleep 600; done
-while [ "$(gpu_free_mb)" -lt 3600 ] || [ "$(gpu_foreign_procs)" -ne 0 ]; do
+while [ "$(gpu_free_mb)" -lt 3600 ]; do
   sleep 300
 done
-wait_for_idle_box 3000 50 6
+# 2026-10-10: gates relaxed by user decision -- accept slower steps on the
+# shared box rather than waiting days for genuine idleness. load <= 24 and
+# thrash <= 2048 KB/s bound the degradation to a few x (measured 30-50x
+# inflation only at load 40+ WITH swap storms); foreign GPU contexts are now
+# tolerated (VRAM free >= 3600MB is the hard constraint). Watchdog raised to
+# 180 min to match the accepted slower pace; resume bounds any kill to <=100
+# lost steps.
+wait_for_idle_box 3000 2048 24
 cd "$TR" || exit 1
 
 BASE_PT=$DATA/runs/av_v3_s2/net_e1.pt
@@ -103,7 +110,7 @@ TRAIN_PID=$!
 # takes hours). export-every 100 + resume mean a watchdog kill loses at most
 # 100 steps, and a re-armed phase continues from the newest checkpoint
 # instead of restarting at 0. 90 min of silence => kill.
-STALL_SECS=$((90 * 60))
+STALL_SECS=$((180 * 60))
 INCOMPLETE=0
 last=$(grep -cE '^step' "$TLOG"); quiet=0
 while kill -0 "$TRAIN_PID" 2>/dev/null; do

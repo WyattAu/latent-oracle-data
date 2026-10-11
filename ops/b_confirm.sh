@@ -51,7 +51,10 @@ fi
 log "=== B-confirm armed (waits grpo_phase exit) ==="
 while pgrep -f "grpo_phase.sh" > /dev/null; do sleep 600; done
 log "grpo_phase gone; waiting for idle box"
-wait_for_idle_box 3000 50 6
+# 2026-10-10: relaxed per user decision (see grpo_phase.sh) -- fastchess
+# time-controls degrade both engines equally under load, so the verdict
+# stays fair, just slower and noisier.
+wait_for_idle_box 3000 2048 24
 
 # 400 rounds x 2 colors = 800 games (~1.5-3h idle). stage2 FIRST: txt Elo then
 # reads from stage2's perspective.

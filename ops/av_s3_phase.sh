@@ -44,10 +44,11 @@ wait_for_idle_box() {
 log "=== AV s3 phase armed (waits grpo_phase + b_confirm exit) ==="
 while pgrep -f "grpo_phase.sh" > /dev/null; do sleep 600; done
 while pgrep -f "b_confirm.sh" > /dev/null; do sleep 600; done
-while [ "$(gpu_free_mb)" -lt 3600 ] || [ "$(gpu_foreign_procs)" -ne 0 ]; do
+while [ "$(gpu_free_mb)" -lt 3600 ]; do
   sleep 300
 done
-wait_for_idle_box 3000 50 6
+# 2026-10-10: relaxed per user decision (see grpo_phase.sh).
+wait_for_idle_box 3000 2048 24
 
 log "AV s3: d16 RCT/QAT fine-tune from stage-1, FULL TB sidecar (3,728 labels)"
 $PY train.py \
