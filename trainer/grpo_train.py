@@ -367,21 +367,85 @@ def main():
             continue
         opt.zero_grad(set_to_none=True)
         loss.backward()
-        # A finite loss can still have NaN gradients (one inf*0 inside the
-        # graph is enough). clip_grad_norm_ would scale every gradient by a
-        # NaN factor and opt.step() would corrupt the weights -- exactly the
-        # permanent-skip loop above. Refuse the update: weights stay finite
-        # and the next batch gets a clean chance.
+        # A finite loss can still have NaN gradients on CUDA (observed in
+        # production under memory pressure; the identical batch on CPU
+        # backprops clean, so this is a runtime artifact, not bad data).
+        # clip_grad_norm_ would scale every gradient by a NaN factor and
+        # opt.step() would corrupt the weights -- the permanent-skip loop.
+        # Response: redo the update on CPU, where the gradients are clean.
+        # The CPU model mirrors the CUDA weights, so the update is the
+        # mathematically correct one, just slower; it only runs on the
+        # affected batches.
         if not all(torch.isfinite(p.grad).all()
                    for p in model.parameters() if p.grad is not None):
             opt.zero_grad(set_to_none=True)
-            skipped += 1
-            consec_skips += 1
-            if consec_skips >= 100:
-                print(f"FATAL: {consec_skips} consecutive non-finite gradient "
-                      f"batches -- refusing to corrupt the weights; aborting",
-                      flush=True)
-                return
+            # The fallback needs its own DIFFERENTIABLE CPU forward: the CUDA
+            # `flat` is detached, so a CPU loss built from it has no graph.
+            cpu_model = getattr(main, "_cpu_model", None)
+            if cpu_model is None:
+                cpu_model = ChessNet(v3=True)
+                cpu_model.load_state_dict(
+                    {k: v.detach().cpu() for k, v in model.state_dict().items()})
+                main._cpu_model = cpu_model
+                base_cpu = ChessNet(v3=True)
+                base_cpu.load_state_dict(
+                    {k: v.detach().cpu() for k, v in base.state_dict().items()})
+                main._base_cpu = base_cpu
+            else:
+                cpu_model.load_state_dict(
+                    {k: v.detach().cpu() for k, v in model.state_dict().items()})
+            codes_c = torch.from_numpy(bc).cpu()
+            side_c = torch.from_numpy(bs).cpu()
+            castle_c = castle_t.detach().cpu()
+            ep_c = ep_t.detach().cpu()
+            scores_c, _, _ = cpu_model(codes_c, side_c, castle=castle_c, ep=ep_c)
+            flat_c = scores_c.reshape(scores_c.shape[0], 64 * 64)
+            with torch.no_grad():
+                bscores_c, _, _ = main._base_cpu(codes_c, side_c,
+                                                 castle=castle_c, ep=ep_c)
+            bflat_c = bscores_c.reshape(bscores_c.shape[0], 64 * 64)
+            logps_c, kls_c = [], []
+            for j in sel:
+                mask_c = fens[j][1].cpu()
+                lp_c = F.log_softmax(flat_c[j] + mask_c, dim=-1)
+                blp_c = F.log_softmax(bflat_c[j] + mask_c, dim=-1)
+                a_c = acts[j].cpu()
+                logps_c.append(lp_c[a_c])
+                klt_c = blp_c.exp() * (blp_c - lp_c)
+                kls_c.append(torch.nan_to_num(klt_c, nan=0.0).sum())
+            new_logp_c = torch.stack(logps_c)
+            kl_c = torch.stack(kls_c).mean()
+            z_c = (flat_c.logsumexp(dim=-1) ** 2).mean() * 1e-3
+            adv_c = adv_sel.detach().cpu()
+            ratio_c = torch.nan_to_num(
+                torch.exp(new_logp_c - old_logp.detach().cpu()), nan=0.0)
+            s1c = ratio_c * adv_c
+            s2c = torch.clamp(ratio_c, 1 - args.clip, 1 + args.clip) * adv_c
+            loss_c = -torch.min(s1c, s2c).mean() + args.kl_beta * kl_c + z_c
+            cpu_model.zero_grad(set_to_none=True)
+            loss_c.backward()
+            if not all(torch.isfinite(p.grad).all()
+                       for p in cpu_model.parameters() if p.grad is not None):
+                # Even CPU gradients are NaN: genuinely bad batch, skip it.
+                skipped += 1
+                consec_skips += 1
+                if consec_skips >= 100:
+                    print(f"FATAL: {consec_skips} consecutive non-finite "
+                          f"gradient batches (CPU fallback also NaN) -- "
+                          f"aborting", flush=True)
+                    return
+                continue
+            torch.nn.utils.clip_grad_norm_(cpu_model.parameters(), 1.0)
+            with torch.no_grad():
+                for p_cuda, p_cpu in zip(model.parameters(),
+                                         cpu_model.parameters()):
+                    p_cuda.grad = p_cpu.grad.to(p_cuda.device)
+            opt.step()
+            cpu_updates = getattr(main, "_cpu_updates", 0)
+            main._cpu_updates = cpu_updates + 1
+            step += 1
+            print(f"step {step}: CPU-fallback update #{main._cpu_updates}",
+                  flush=True)
             continue
         consec_skips = 0
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
