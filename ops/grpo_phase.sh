@@ -79,7 +79,12 @@ done
 # tolerated (VRAM free >= 3600MB is the hard constraint). Watchdog raised to
 # 180 min to match the accepted slower pace; resume bounds any kill to <=100
 # lost steps.
-wait_for_idle_box 3000 2048 24
+# 2026-10-11: the sibling sessions' PERSISTENT baseline thrash is
+# ~4,500-5,200 KB/s -- the 2048 gate waited days. The catastrophic storms
+# measured 16-54 MB/s, an order of magnitude above the baseline; a 6 MB/s
+# ceiling admits the baseline while still refusing the storms. The watchdog
+# + resume + NaN guards bound whatever the baseline costs.
+wait_for_idle_box 3000 6144 24
 cd "$TR" || exit 1
 
 BASE_PT=$DATA/runs/av_v3_s2/net_e1.pt
