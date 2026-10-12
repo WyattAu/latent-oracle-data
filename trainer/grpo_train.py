@@ -330,7 +330,9 @@ def main():
             # 0 * (-inf - -inf) = NaN, which poisoned the loss from the very
             # first update (pg nan kl nan) and destroyed the weights.
             kl_terms = blp.exp() * (blp - lp)
-            kls.append(torch.nan_to_num(kl_terms, nan=0.0).sum())
+            kfin = torch.isfinite(kl_terms)
+            kls.append(torch.where(kfin, kl_terms,
+                                   torch.zeros_like(kl_terms)).sum())
         if not logps:
             continue
         new_logp = torch.stack(logps)
@@ -339,8 +341,19 @@ def main():
         # Padded slots carry -inf in BOTH log-probs (dummy index 0 is masked),
         # so their ratio is exp(-inf - -inf) = NaN. Their advantage is 0, so
         # zeroing the NaN ratio makes them contribute exactly nothing.
-        ratio = torch.nan_to_num(
-            torch.exp(new_logp - old_logp.to(device)), nan=0.0)
+        # nan_to_num is WRONG here: it fixes the forward value (exp(NaN) -> 0)
+        # but its backward passes the upstream gradient straight through to
+        # exp, whose derivative at a NaN input is NaN -- NaN * 0 = NaN. The
+        # NaN then floods every parameter's gradient (diagnosed 2026-10-12:
+        # new_logp carries -inf at dummy slots; -inf - -inf = NaN in the
+        # exponent). torch.where masks the gradient at the replaced
+        # positions, so no NaN ever enters the graph.
+        finite_ratio = torch.isfinite(new_logp) & torch.isfinite(old_logp.to(device))
+        ratio = torch.where(
+            finite_ratio,
+            torch.exp(torch.where(finite_ratio, new_logp - old_logp.to(device),
+                                  torch.zeros_like(new_logp))),
+            torch.zeros_like(new_logp))
         s1 = ratio * adv_sel
         s2 = torch.clamp(ratio, 1 - args.clip, 1 + args.clip) * adv_sel
         pg = -torch.min(s1, s2).mean()
