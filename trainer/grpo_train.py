@@ -349,11 +349,17 @@ def main():
         # exponent). torch.where masks the gradient at the replaced
         # positions, so no NaN ever enters the graph.
         finite_ratio = torch.isfinite(new_logp) & torch.isfinite(old_logp.to(device))
-        ratio = torch.where(
-            finite_ratio,
-            torch.exp(torch.where(finite_ratio, new_logp - old_logp.to(device),
-                                  torch.zeros_like(new_logp))),
-            torch.zeros_like(new_logp))
+        # Second overflow guard: a sharpened policy can push new - old past
+        # float32's exp range (~88 nats), giving ratio = inf whose backward
+        # is inf * 0 = NaN even though min() routes the forward through the
+        # clamped branch. Clamping the log-ratio bounds exp's output to a
+        # finite 1e13 while leaving every in-band ratio untouched; the
+        # PPO objective only ever selects the clamped branch for such
+        # extreme ratios anyway.
+        safe_diff = torch.where(finite_ratio,
+                                new_logp - old_logp.to(device),
+                                torch.zeros_like(new_logp)).clamp(-30.0, 30.0)
+        ratio = torch.exp(safe_diff)
         s1 = ratio * adv_sel
         s2 = torch.clamp(ratio, 1 - args.clip, 1 + args.clip) * adv_sel
         pg = -torch.min(s1, s2).mean()
