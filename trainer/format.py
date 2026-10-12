@@ -130,5 +130,6 @@ class MaskSidecar:
                              offset=self._base + a + 1)  # +1 skips the n_moves byte
 
     def close(self):
+        self.offsets = None  # release the frombuffer export before munmap
         self._mm.close()
         self._f.close()

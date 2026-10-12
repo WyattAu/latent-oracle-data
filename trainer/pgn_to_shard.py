@@ -12,17 +12,10 @@ import chess
 import numpy as np
 import chess.pgn
 
-REC_DTYPE = np.dtype([
-    ("halfmove", "<u1"),
-    ("fullmove", "<u2"),
-    ("n_targets", "<u1"),
-    ("pad", "<u1"),
-    ("board", "<u4", (8,)),
-    ("eval_cp", "<i2"),
-    ("targets", "<u1", (9,)),
-    ("wdl", "<f4", (3,)),
-    ("pad2", "<u1"),
-])
+from format import REC_DTYPE  # canonical layout: side, castling, ep, halfmove,
+# fullmove, n_targets, board, eval_cp, targets, wdl -- 64 bytes. Redeclaring
+# this dtype from a partial reading produced 59-byte records with every field
+# after `board` misaligned (found 2026-10-12: promo values 0-236).
 PIECE_CODE = {}  # python-chess piece_type/color -> shard code
 for pt in range(1, 7):
     PIECE_CODE[(pt, chess.WHITE)] = pt
@@ -49,7 +42,7 @@ def encode_board(board):
 
 
 def encode_record(board, move, outcome_white_pov):
-    codes = encode_board(board)
+    packed = encode_board(board)
     side = 0 if board.turn == chess.WHITE else 1
     rights = 0
     cr = board.clean_castling_rights()
@@ -59,8 +52,6 @@ def encode_record(board, move, outcome_white_pov):
     if cr & chess.BB_H8: rights |= 4   # k
     ep = board.ep_square if board.ep_square is not None else 255
     promo = PROMO.get(move.promotion, 0) if move.promotion else 0
-    targets = np.zeros(9, dtype=np.uint8)
-    targets[0:3] = [move.from_square, move.to_square, promo]
     wdl = np.zeros(3, dtype="<f4")
     if outcome_white_pov == 1:
         wdl[0] = 1.0
@@ -69,12 +60,15 @@ def encode_record(board, move, outcome_white_pov):
     else:
         wdl[1] = 1.0
     rec = np.zeros(1, dtype=REC_DTYPE)
+    rec[0]["side"] = side
+    rec[0]["castling"] = rights
+    rec[0]["ep"] = ep
     rec[0]["halfmove"] = min(board.halfmove_clock, 255)
     rec[0]["fullmove"] = min(board.fullmove_number, 65535)
     rec[0]["n_targets"] = 1
-    rec[0]["board"] = codes
+    rec[0]["board"] = packed
     rec[0]["eval_cp"] = 0
-    rec[0]["targets"] = targets
+    rec[0]["targets"][0:3] = [move.from_square, move.to_square, promo]
     rec[0]["wdl"] = wdl
     return rec
 
@@ -113,9 +107,12 @@ def main():
                     recs.append(encode_record(board, move, outcome))
                 board.push(move)
 
-    magic, version = 0x48534f4c, 1  # LOSH -- matches the labeler header exactly
+    # 16-byte header, mirroring the labeler: magic(I4), version(H),
+    # hdr_size(H)=16, record count(I4), reserved(I4). The first converter
+    # draft wrote an 8-byte header with the count in the hdr_size field,
+    # which made iter_records seek 52,797 bytes in and read pure misalignment.
     with open(args.out, "wb") as f:
-        f.write(struct.pack("<IHH", magic, version, len(recs)))
+        f.write(struct.pack("<IHHII", 0x48534F4C, 1, 16, len(recs), 0))
         if recs:
             f.write(np.concatenate(recs).tobytes())
     print(f"games: {games}, records: {len(recs)} -> {args.out}")
