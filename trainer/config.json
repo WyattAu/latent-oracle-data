@@ -32,7 +32,7 @@
         "additional_lines_rgx": [],
         "event_name": "Fastchess Tournament",
         "site": "?",
-        "file": "/home/wyatt/data/sprt/av-s2-vs-s1.pgn",
+        "file": "/home/wyatt/data/sprt/grpo-vs-pool.pgn",
         "notation": 0,
         "append_file": true,
         "track_nodes": false,
@@ -60,7 +60,7 @@
     },
     "config_name": "config.json",
     "output": 0,
-    "seed": 11532326042324465398,
+    "seed": 17433595610652979256,
     "variant": 0,
     "type": 0,
     "gauntlet_seeds": 1,
@@ -69,8 +69,8 @@
     "wait": 0,
     "autosaveinterval": 20,
     "games": 2,
-    "rounds": 150,
-    "concurrency": 4,
+    "rounds": 200,
+    "concurrency": 6,
     "force_concurrency": false,
     "recover": false,
     "noswap": false,
@@ -89,7 +89,7 @@
     },
     "engines": [
         {
-            "name": "av-stage1",
+            "name": "grpo",
             "dir": "",
             "cmd": "/home/wyatt/dev/src/github.com/WyattAu/latent-oracle/build/release/latent-oracle",
             "args": "",
@@ -97,7 +97,7 @@
             "options": [
                 [
                     "WeightsFile",
-                    "/home/wyatt/data/runs/av_v3/av_e1.bin"
+                    "/home/wyatt/data/runs/grpo_v1/grpo_s1500.bin"
                 ]
             ],
             "limit": {
@@ -109,20 +109,24 @@
                     "timemargin": 0
                 },
                 "nodes": 0,
-                "plies": 0
+                "plies": 1
             },
             "variant": 0
         },
         {
-            "name": "av-stage2",
+            "name": "sf16-p1",
             "dir": "",
-            "cmd": "/home/wyatt/dev/src/github.com/WyattAu/latent-oracle/build/release/latent-oracle",
+            "cmd": "/home/wyatt/tools/chess/stockfish/stockfish-ubuntu-x86-64-avx2",
             "args": "",
             "restart": false,
             "options": [
                 [
-                    "WeightsFile",
-                    "/home/wyatt/data/runs/av_v3_s2/av_e1.bin"
+                    "Threads",
+                    "1"
+                ],
+                [
+                    "Hash",
+                    "16"
                 ]
             ],
             "limit": {
@@ -134,22 +138,22 @@
                     "timemargin": 0
                 },
                 "nodes": 0,
-                "plies": 0
+                "plies": 1
             },
             "variant": 0
         }
     ],
     "stats": {
-        "av-stage1 vs av-stage2": {
-            "wins": 57,
-            "losses": 73,
-            "draws": 170,
-            "penta_WW": 3,
-            "penta_WD": 32,
-            "penta_WL": 19,
-            "penta_DD": 50,
-            "penta_LD": 38,
-            "penta_LL": 8
+        "grpo vs sf16-p1": {
+            "wins": 0,
+            "losses": 373,
+            "draws": 27,
+            "penta_WW": 0,
+            "penta_WD": 0,
+            "penta_WL": 0,
+            "penta_DD": 2,
+            "penta_LD": 23,
+            "penta_LL": 175
         }
     }
 }
