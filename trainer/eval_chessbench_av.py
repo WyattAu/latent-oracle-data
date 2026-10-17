@@ -41,10 +41,13 @@ def main():
     args = ap.parse_args()
 
     trunk = ChessNet(v3=True).to("cuda")
-    head = AVHead(trunk.blocks[-1].Wq.out_features, NUM_BINS).to("cuda")
     ck = torch.load(args.ckpt, map_location="cuda", weights_only=True)
+    style = ck.get("style", "pooled")
+    head = AVHead(trunk.blocks[-1].Wq.out_features, NUM_BINS,
+                  style=style).to("cuda")
     trunk.load_state_dict(ck["trunk"])
     head.load_state_dict(ck["head"])
+    style = ck.get("style", "pooled")
     trunk.eval(); head.eval()
 
     rows = []
@@ -74,7 +77,8 @@ def main():
             # score every legal move: one batched forward per candidate
             ew_best, best_uci = -1.0, None
             trunk(codes_t.unsqueeze(0), side_t, castle=cast_t, ep=ep_t)
-            state = feats["h"].mean(dim=1)  # (1, D) -- same trunk state for all
+            h = feats["h"]
+            state = h if style == "xattn" else h.mean(dim=1)
             cand = []
             for mv in legal:
                 promo = {None: 0, chess.KNIGHT: 1, chess.BISHOP: 2,
@@ -83,7 +87,8 @@ def main():
             from_t = torch.tensor([c[1] for c in cand], device="cuda")
             to_t = torch.tensor([c[2] for c in cand], device="cuda")
             pr_t = torch.tensor([c[3] for c in cand], device="cuda")
-            state_b = state.expand(len(cand), -1)
+            state_b = state.expand(len(cand), -1, -1) if style == "xattn" \
+                else state.expand(len(cand), -1)
             logits = head(state_b, from_t, to_t, pr_t)
             ew = expected_win(logits)
             best_i = int(torch.argmax(ew).item())

@@ -29,7 +29,8 @@ def best_move(fen):
         lambda m, i, o: feats.__setitem__("h", o))
     with torch.no_grad():
         trunk(codes_t, side_t, castle=cast_t, ep=ep_t)
-        state = feats["h"].mean(dim=1)
+        h = feats["h"]
+        state = h if style == "xattn" else h.mean(dim=1)
         cand = []
         for mv in legal:
             promo = {None: 0, chess.KNIGHT: 1, chess.BISHOP: 2,
@@ -38,7 +39,9 @@ def best_move(fen):
         from_t = torch.tensor([c[1] for c in cand], device="cuda")
         to_t = torch.tensor([c[2] for c in cand], device="cuda")
         pr_t = torch.tensor([c[3] for c in cand], device="cuda")
-        logits = head(state.expand(len(cand), -1), from_t, to_t, pr_t)
+        state_b = state.expand(len(cand), -1, -1) if style == "xattn" \
+            else state.expand(len(cand), -1)
+        logits = head(state_b, from_t, to_t, pr_t)
         ew = expected_win(logits)
         best = cand[int(torch.argmax(ew).item())][0]
     h.remove()
@@ -49,10 +52,13 @@ def main():
     global trunk, head
     ckpt = sys.argv[1]
     trunk = ChessNet(v3=True).to("cuda")
-    head = AVHead(trunk.blocks[-1].Wq.out_features, NUM_BINS).to("cuda")
     ck = torch.load(ckpt, map_location="cuda", weights_only=True)
+    style = ck.get("style", "pooled")
+    head = AVHead(trunk.blocks[-1].Wq.out_features, NUM_BINS,
+                  style=style).to("cuda")
     trunk.load_state_dict(ck["trunk"])
     head.load_state_dict(ck["head"])
+    style = ck.get("style", "pooled")
     trunk.eval(); head.eval()
 
     board = chess.Board()

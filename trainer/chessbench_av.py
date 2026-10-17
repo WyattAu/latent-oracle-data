@@ -62,20 +62,44 @@ def fen_to_inputs(fen: str):
 
 
 class AVHead(nn.Module):
-    """Move-conditional win% bucket classifier over the trunk's state."""
+    """Move-conditional win% bucket classifier over the trunk's state.
 
-    def __init__(self, d_model: int, num_bins: int = NUM_BINS):
+    style="pooled": mean-pool the board tokens, concat the move embedding,
+    MLP -> bins. The move and the state only mix in the last MLP.
+    style="xattn": the move embedding attends over all 64 board tokens
+    (DeepNoc-style move conditioning, one cross-attention layer) before the
+    output MLP. Keeps the spec's ~one-trunk-pass inference: the cross-attention
+    runs per candidate move but is tiny next to the 6-block trunk.
+    """
+
+    def __init__(self, d_model: int, num_bins: int = NUM_BINS,
+                 style: str = "pooled"):
         super().__init__()
+        self.style = style
         self.from_emb = nn.Embedding(64, d_model)
         self.to_emb = nn.Embedding(64, d_model)
         self.promo_emb = nn.Embedding(5, d_model)
-        self.net = nn.Sequential(
-            nn.Linear(d_model * 2, d_model), nn.GELU(),
-            nn.Linear(d_model, num_bins),
-        )
+        if style == "xattn":
+            self.xattn = nn.MultiheadAttention(d_model, 4, batch_first=True)
+            self.norm = nn.LayerNorm(d_model)
+            self.net = nn.Sequential(
+                nn.Linear(d_model, d_model), nn.GELU(),
+                nn.Linear(d_model, num_bins),
+            )
+        elif style == "pooled":
+            self.net = nn.Sequential(
+                nn.Linear(d_model * 2, d_model), nn.GELU(),
+                nn.Linear(d_model, num_bins),
+            )
+        else:
+            raise ValueError(f"unknown head style: {style}")
 
     def forward(self, state, from_sq, to_sq, promo):
         m = self.from_emb(from_sq) + self.to_emb(to_sq) + self.promo_emb(promo)
+        if self.style == "xattn":
+            # state: (B, 64, D) board tokens; query = move token (B, 1, D)
+            out, _ = self.xattn(m.unsqueeze(1), state, state)
+            return self.net(self.norm(out.squeeze(1)))
         return self.net(torch.cat([state, m], dim=-1))
 
 
@@ -95,6 +119,10 @@ def expected_win(bins_logits: torch.Tensor) -> torch.Tensor:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bags", nargs="+", required=True)
+    ap.add_argument("--head-style", choices=["pooled", "xattn"],
+                    default="pooled",
+                    help="AV head: pooled concat (v1) or move-token "
+                         "cross-attention (DeepNoc-style conditioning)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--init-from", default="")
     ap.add_argument("--steps", type=int, default=20000)
@@ -125,7 +153,7 @@ def main():
         trunk(_probe_codes, _probe_side)
         D = feats["h"].shape[-1]
     print(f"trunk state dim: {D}", flush=True)
-    head = AVHead(D, args.num_bins).to("cuda")
+    head = AVHead(D, args.num_bins, style=args.head_style).to("cuda")
     params = list(trunk.parameters()) + list(head.parameters())
     opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.01)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.steps)
@@ -207,8 +235,11 @@ def main():
         codes_b, side_b, cast_b, ep_b, from_b, to_b, promo_b, win_b = \
             batch_to_device(idx_np)
         trunk(codes_b, side_b, castle=cast_b, ep=ep_b)
-        state_vec = feats["h"].mean(dim=1)  # pool the residual stream (B, D)
-        logits = head(state_vec, from_b, to_b, promo_b)
+        h = feats["h"]  # (B, 64, D) residual stream
+        if args.head_style == "xattn":
+            logits = head(h, from_b, to_b, promo_b)
+        else:
+            logits = head(h.mean(dim=1), from_b, to_b, promo_b)
         target = hl_gauss_targets(win_b)
         loss = F.cross_entropy(logits, target)
         if not torch.isfinite(loss):
@@ -234,7 +265,8 @@ def main():
             print(f"step {step}: loss {loss.item():.4f} bucket-acc {acc.item():.3f} "
                   f"|E[win]-wp| {cal.item():.4f} consec_bad {consec_bad}", flush=True)
         if step % args.export_every == 0 or step == args.steps:
-            torch.save({"trunk": trunk.state_dict(), "head": head.state_dict()},
+            torch.save({"trunk": trunk.state_dict(), "head": head.state_dict(),
+                        "style": args.head_style},
                        f"{args.out}/av_s{step // args.export_every}.pt")
             print(f"exported {args.out}/av_s{step // args.export_every}.pt",
                   flush=True)
