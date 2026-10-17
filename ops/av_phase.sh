@@ -9,7 +9,7 @@
 # Then: SPRT A/B vs the BC chain's net_best + conversion metrics (E4).
 set -u
 DATA=/home/wyatt/data
-PY=/tmp/opencode/venv/bin/python
+PY=/home/wyatt/.venvs/chess/bin/python
 TR=/home/wyatt/dev/src/github.com/WyattAu/latent-oracle-data/trainer
 TOOLS=/home/wyatt/tools/chess
 ENGINE=/home/wyatt/dev/src/github.com/WyattAu/latent-oracle/build/release/latent-oracle

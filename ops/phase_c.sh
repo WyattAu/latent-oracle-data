@@ -12,7 +12,7 @@ LOG=$DATA/phase_c.log
 PGN_DIR=$DATA/sprt
 ENGINE=/home/wyatt/dev/src/github.com/WyattAu/latent-oracle/build/release/latent-oracle
 SF=$TOOLS/stockfish/stockfish-ubuntu-x86-64-avx2
-PY=/tmp/opencode/venv/bin/python
+PY=/home/wyatt/.venvs/chess/bin/python
 LO_REPO=/home/wyatt/dev/src/github.com/WyattAu/latent-oracle-data
 
 mkdir -p "$PGN_DIR"

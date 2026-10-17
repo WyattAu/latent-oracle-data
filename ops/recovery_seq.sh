@@ -5,7 +5,7 @@
 # GPU makes each stage fast and safe.
 set -u
 DATA=/home/wyatt/data
-PY=/tmp/opencode/venv/bin/python
+PY=/home/wyatt/.venvs/chess/bin/python
 TRAINER=/home/wyatt/dev/src/github.com/WyattAu/latent-oracle-data/trainer/train.py
 TOOLS=/home/wyatt/tools/chess
 ENGINE=/home/wyatt/dev/src/github.com/WyattAu/latent-oracle/build/release/latent-oracle

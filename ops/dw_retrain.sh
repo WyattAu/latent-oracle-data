@@ -7,7 +7,7 @@
 set -u
 DATA=/home/wyatt/data
 LOG=$DATA/dw_train.log
-PY=/tmp/opencode/venv/bin/python
+PY=/home/wyatt/.venvs/chess/bin/python
 TRAINER=/home/wyatt/dev/src/github.com/WyattAu/latent-oracle-data/trainer/train.py
 
 log() { echo "[$(date '+%m-%d %H:%M:%S')] $*" >> "$LOG"; }

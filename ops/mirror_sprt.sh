@@ -7,7 +7,7 @@
 # the same net, so the only variable is the UCI MirrorAvg option.
 set -u
 DATA=/home/wyatt/data
-PY=/tmp/opencode/venv/bin/python
+PY=/home/wyatt/.venvs/chess/bin/python
 TR=/home/wyatt/dev/src/github.com/WyattAu/latent-oracle-data/trainer
 TOOLS=/home/wyatt/tools/chess
 ENGINE=/home/wyatt/dev/src/github.com/WyattAu/latent-oracle/build/release/latent-oracle

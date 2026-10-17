@@ -10,7 +10,7 @@ TOOLS=/home/wyatt/tools/chess
 ENGINE=/home/wyatt/dev/src/github.com/WyattAu/latent-oracle/build/release/latent-oracle
 SF=$TOOLS/stockfish/stockfish-ubuntu-x86-64-avx2
 LO=$TOOLS/lo-data
-PY=/tmp/opencode/venv/bin/python
+PY=/home/wyatt/.venvs/chess/bin/python
 TRAINER=/home/wyatt/dev/src/github.com/WyattAu/latent-oracle-data/trainer/train.py
 LOG=$DATA/phase_post.log
 

@@ -5,7 +5,7 @@
 # Ladder gate: puzzle suite >= +1.5 points over the base net.
 set -u
 DATA=/home/wyatt/data
-PY=/tmp/opencode/venv/bin/python
+PY=/home/wyatt/.venvs/chess/bin/python
 TR=/home/wyatt/dev/src/github.com/WyattAu/latent-oracle-data/trainer
 LOG=$DATA/amz_pilot.log
 gpu_free_mb() { nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | head -1; }

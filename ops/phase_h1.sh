@@ -9,7 +9,7 @@ PGN_DIR=$DATA/sprt
 ENGINE=/home/wyatt/dev/src/github.com/WyattAu/latent-oracle/build/release/latent-oracle
 SF=$TOOLS/stockfish/stockfish-ubuntu-x86-64-avx2
 LO=$TOOLS/lo-data
-PY=/tmp/opencode/venv/bin/python
+PY=/home/wyatt/.venvs/chess/bin/python
 NET_DIR=$DATA/runs/dist1m_ext
 NET_BC=$DATA/runs/bc/net_e1.bin
 

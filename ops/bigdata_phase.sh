@@ -13,7 +13,7 @@
 #         -> wait for a free GPU -> train -> SPRT vs bc_v1.
 set -u
 DATA=/home/wyatt/data
-PY=/tmp/opencode/venv/bin/python
+PY=/home/wyatt/.venvs/chess/bin/python
 TR=/home/wyatt/dev/src/github.com/WyattAu/latent-oracle-data/trainer
 TOOLS=/home/wyatt/tools/chess
 ENGINE=/home/wyatt/dev/src/github.com/WyattAu/latent-oracle/build/release/latent-oracle

@@ -8,7 +8,7 @@
 DATA=/home/wyatt/data
 LO=/home/wyatt/dev/src/github.com/WyattAu/latent-oracle-data
 SF=/home/wyatt/tools/chess/stockfish/stockfish-ubuntu-x86-64-avx2
-PY=/tmp/opencode/venv/bin/python
+PY=/home/wyatt/.venvs/chess/bin/python
 LOG=$DATA/pipeline.log
 PGN=$DATA/lichess/lichess_db_standard_rated_2026-07.pgn.zst
 
