@@ -110,6 +110,8 @@ def main():
     trunk = ChessNet(v3=True).to("cuda")
     if args.init_from:
         sd = torch.load(args.init_from, map_location="cuda", weights_only=True)
+        if "trunk" in sd:  # this script's checkpoints nest trunk+head
+            sd = sd["trunk"]
         trunk.load_state_dict(sd)
         print(f"trunk init from {args.init_from}", flush=True)
     # capture the residual stream leaving the LAST block: the AV head pools
@@ -128,68 +130,86 @@ def main():
     opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.01)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.steps)
 
-    # materialise the bagz records into tensors once (positions repeat across
-    # their legal moves; dedupe by fen cache)
+    # streaming build into PREALLOCATED CPU arrays (uint8/int32): 20M records
+    # fit in ~3GB RAM; the fen_cache approach (dict of per-fen decodes) dies
+    # at this scale, and per-record decode without cache is ~100 min -- so
+    # cache decoded FENs in a bounded dict (hot set) and accept re-decodes.
+    cap = args.record_limit or 20_000_000
     t0 = time.time()
+    X_codes = np.zeros((cap, 64), dtype=np.uint8)
+    X_meta = np.zeros((cap, 4), dtype=np.int32)  # side, cast, ep_feat, promo
+    X_from = np.zeros(cap, dtype=np.int16)
+    X_to = np.zeros(cap, dtype=np.int16)
+    Y_win = np.zeros(cap, dtype=np.float32)
     fen_cache = {}
-    X_codes, X_side, X_cast, X_ep = [], [], [], []
-    X_from, X_to, X_promo = [], [], []
-    Y_win = []
     n_rec = 0
+    skipped_bad = 0
     for path in args.bags:
-        for rec in read_bagz(path):
-            fen, move, wp = decode_av_record(rec)
-            key = fen
-            if key not in fen_cache:
-                fen_cache[key] = fen_to_inputs(fen)
-            codes, side, cast, ep = fen_cache[key]
-            mv = chess.Move.from_uci(move)
-            X_codes.append(codes); X_side.append(side)
-            X_cast.append(cast); X_ep.append(ep)
-            X_from.append(mv.from_square); X_to.append(mv.to_square)
-            X_promo.append(PROMO_ID.get(mv.promotion, 0))
-            Y_win.append(wp)
-            n_rec += 1
-            if args.record_limit and n_rec >= args.record_limit:
-                break
-        if args.record_limit and n_rec >= args.record_limit:
+        if n_rec >= cap:
             break
+        for rec in read_bagz(path):
+            if n_rec >= cap:
+                break
+            fen, move, wp = decode_av_record(rec)
+            try:
+                inputs = fen_cache.get(fen)
+                if inputs is None:
+                    if len(fen_cache) < 3_000_000:
+                        inputs = fen_to_inputs(fen)
+                        fen_cache[fen] = inputs
+                    else:
+                        inputs = fen_to_inputs(fen)
+            except (ValueError, chess.InvalidMoveError):
+                skipped_bad += 1
+                continue
+            codes, side, cast, ep = inputs
+            try:
+                mv = chess.Move.from_uci(move)
+            except chess.InvalidMoveError:
+                skipped_bad += 1
+                continue
+            X_codes[n_rec] = codes
+            X_meta[n_rec, 0] = side
+            X_meta[n_rec, 1] = cast
+            X_meta[n_rec, 2] = 0 if ep >= 64 else 1 + (ep % 8)
+            X_meta[n_rec, 3] = PROMO_ID.get(mv.promotion, 0)
+            X_from[n_rec] = mv.from_square
+            X_to[n_rec] = mv.to_square
+            Y_win[n_rec] = wp
+            n_rec += 1
         print(f"  {path.split('/')[-1]}: cumulative {n_rec} records "
-              f"({time.time() - t0:.0f}s)", flush=True)
-        if n_rec and len(fen_cache) > 6_000_000:
-            break  # fen cache guard
-    X_codes = np.stack(X_codes)
-    X_side = np.array(X_side, dtype=np.int64)
-    X_cast = np.array(X_cast, dtype=np.int64)
-    X_ep = np.array(X_ep, dtype=np.int64)
-    X_from = np.array(X_from, dtype=np.int64)
-    X_to = np.array(X_to, dtype=np.int64)
-    X_promo = np.array(X_promo, dtype=np.int64)
-    Y_win = np.array(Y_win, dtype=np.float32)
-    del fen_cache
-    print(f"dataset: {len(Y_win)} (pos, move, wp) records, "
-          f"{len(np.unique(X_codes, axis=0))} unique boards (capped view), "
-          f"{time.time() - t0:.0f}s", flush=True)
+              f"({time.time() - t0:.0f}s, cache {len(fen_cache)}, "
+              f"bad {skipped_bad})", flush=True)
+    n = n_rec
+    X_from_s = X_from[:n].astype(np.int64)
+    X_to_s = X_to[:n].astype(np.int64)
+    print(f"dataset: {n} (pos, move, wp) records ({time.time() - t0:.0f}s, "
+          f"bad {skipped_bad})", flush=True)
 
-    codes_t = torch.from_numpy(X_codes.astype(np.int64)).to("cuda")
-    side_t = torch.from_numpy(X_side.astype(np.int64)).to("cuda")
-    cast_t = torch.from_numpy(X_cast.astype(np.int64)).to("cuda")
-    # ep feature = file index (trainer convention): 0 if none, else 1 + file
-    ep_feat = np.where(X_ep >= 64, 0, 1 + (X_ep % 8)).astype(np.int64)
-    ep_t = torch.from_numpy(ep_feat).to("cuda")
-    from_t = torch.from_numpy(X_from).to("cuda")
-    to_t = torch.from_numpy(X_to).to("cuda")
-    promo_t = torch.from_numpy(X_promo).to("cuda")
-    win_t = torch.from_numpy(Y_win).to("cuda")
+    # per-batch numpy gather -> pinned transfer; GPU never holds the table
+    codes_cpu = X_codes[:n]
+    meta_cpu = X_meta[:n]
+    win_cpu = Y_win[:n]
+    from_cpu = X_from_s
+    to_cpu = X_to[:n].astype(np.int64)
 
-    n = len(Y_win)
+    def batch_to_device(idx_np):
+        codes_b = torch.from_numpy(codes_cpu[idx_np].astype(np.int64)).to("cuda")
+        meta_b = torch.from_numpy(meta_cpu[idx_np].astype(np.int64)).to("cuda")
+        from_b = torch.from_numpy(from_cpu[idx_np]).to("cuda")
+        to_b = torch.from_numpy(to_cpu[idx_np]).to("cuda")
+        promo_b = meta_b[:, 3]
+        win_b = torch.from_numpy(win_cpu[idx_np]).to("cuda")
+        return codes_b, meta_b[:, 0], meta_b[:, 1], meta_b[:, 2],             from_b, to_b, promo_b, win_b
     consec_bad = 0
     for step in range(1, args.steps + 1):
-        idx = torch.randint(0, n, (args.batch,), device="cuda")
-        trunk(codes_t[idx], side_t[idx], castle=cast_t[idx], ep=ep_t[idx])
+        idx_np = np.random.randint(0, n, (args.batch,))
+        codes_b, side_b, cast_b, ep_b, from_b, to_b, promo_b, win_b = \
+            batch_to_device(idx_np)
+        trunk(codes_b, side_b, castle=cast_b, ep=ep_b)
         state_vec = feats["h"].mean(dim=1)  # pool the residual stream (B, D)
-        logits = head(state_vec, from_t[idx], to_t[idx], promo_t[idx])
-        target = hl_gauss_targets(win_t[idx])
+        logits = head(state_vec, from_b, to_b, promo_b)
+        target = hl_gauss_targets(win_b)
         loss = F.cross_entropy(logits, target)
         if not torch.isfinite(loss):
             consec_bad += 1
@@ -210,7 +230,7 @@ def main():
                 ew = expected_win(logits)
                 acc = ((torch.argmax(logits, dim=-1) ==
                         torch.argmax(target, dim=-1)).float().mean())
-                cal = (ew - win_t[idx]).abs().mean()
+                cal = (ew - win_b).abs().mean()
             print(f"step {step}: loss {loss.item():.4f} bucket-acc {acc.item():.3f} "
                   f"|E[win]-wp| {cal.item():.4f} consec_bad {consec_bad}", flush=True)
         if step % args.export_every == 0 or step == args.steps:
