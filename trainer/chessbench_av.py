@@ -153,6 +153,8 @@ def main():
         trunk(_probe_codes, _probe_side)
         D = feats["h"].shape[-1]
     print(f"trunk state dim: {D}", flush=True)
+    import os
+    os.makedirs(args.out, exist_ok=True)
     head = AVHead(D, args.num_bins, style=args.head_style).to("cuda")
     params = list(trunk.parameters()) + list(head.parameters())
     opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.01)
