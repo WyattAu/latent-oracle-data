@@ -12,6 +12,9 @@ from chessbench_av import AVHead, expected_win, PIECE_CODE, NUM_BINS
 from eval_chessbench_av import fen_to_inputs
 
 
+style = "pooled"
+
+
 def best_move(fen):
     board = chess.Board(fen)
     legal = list(board.legal_moves)
@@ -25,7 +28,7 @@ def best_move(fen):
     cast_t = torch.tensor([cast], dtype=torch.long, device="cuda")
     ep_t = torch.tensor([ep_feat], dtype=torch.long, device="cuda")
     feats = {}
-    h = trunk.blocks[-1].register_forward_hook(
+    handle = trunk.blocks[-1].register_forward_hook(
         lambda m, i, o: feats.__setitem__("h", o))
     with torch.no_grad():
         trunk(codes_t, side_t, castle=cast_t, ep=ep_t)
@@ -44,12 +47,12 @@ def best_move(fen):
         logits = head(state_b, from_t, to_t, pr_t)
         ew = expected_win(logits)
         best = cand[int(torch.argmax(ew).item())][0]
-    h.remove()
+    handle.remove()
     return best
 
 
 def main():
-    global trunk, head
+    global trunk, head, style
     ckpt = sys.argv[1]
     trunk = ChessNet(v3=True).to("cuda")
     ck = torch.load(ckpt, map_location="cuda", weights_only=True)
