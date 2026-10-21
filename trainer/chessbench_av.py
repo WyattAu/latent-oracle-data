@@ -36,6 +36,11 @@ def hl_gauss(win_prob: float) -> np.ndarray:
     return (weights / weights.sum()).astype(np.float32)
 
 
+# NOTE: this mapping (black = pt+6, 7..12) is INTERNAL to the AV pipeline
+# (training + eval + UCI wrapper all use it, so it is self-consistent).
+# The engine/shard format uses black = pt+8 (9..14) -- see trainer/format.py
+# and ops/netq_parity.py. Do NOT feed AV-encoded boards to the engine or
+# vice versa without remapping.
 PIECE_CODE = {}
 for pt in range(1, 7):
     PIECE_CODE[(pt, chess.WHITE)] = pt
