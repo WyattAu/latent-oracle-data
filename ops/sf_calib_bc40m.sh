@@ -8,7 +8,7 @@ NEW=$D/runs/bc_avlabels40m/net_e0_ema.bin
 for ELO in 2000 2200 2400; do
   $T/fastchess \
     -engine cmd=$ENG name=bc40m option.WeightsFile=$NEW \
-    -engine cmd=/home/wyatt/tools/chess/stockfish name=sf$ELO option.UCI_LimitStrength=true option.UCI_Elo=$ELO \
+    -engine cmd=/home/wyatt/tools/chess/stockfish/stockfish-ubuntu-x86-64-avx2 name=sf$ELO option.UCI_LimitStrength=true option.UCI_Elo=$ELO \
     -each proto=uci tc=15+0.2 \
     -openings file=$T/openings.epd format=epd order=random \
     -games 200 -rounds 100 -repeat -concurrency 6 \
