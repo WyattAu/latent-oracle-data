@@ -8,6 +8,8 @@
 #
 # H0: label depth is a null lever (d16 ~= d10 through plain BC).
 # 300 games, tc=15+0.2, resolution ~ +/- 25 Elo (pair model, by engine name).
+# Load gate relaxed to 24 per the user decision recorded in b_confirm.sh
+# (2026-10-10): tc degrades both engines equally, verdict stays fair.
 set -u
 DATA=/home/wyatt/data
 PY=/home/wyatt/.venvs/chess/bin/python
@@ -49,7 +51,7 @@ if [ -f "$TXT" ] && grep -q "Finished match" "$TXT" 2>/dev/null; then
   exit 0
 fi
 
-wait_for_idle_box 3000 6
+wait_for_idle_box 3000 24
 
 log "running 300-game label-depth test: d16bc-ema vs stage1, tc=15+0.2"
 $TOOLS/fastchess \
