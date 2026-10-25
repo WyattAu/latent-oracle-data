@@ -72,9 +72,14 @@ def main():
             frm = (ord(mv[0]) - 97) + 8 * (int(mv[1]) - 1)
             to = (ord(mv[2]) - 97) + 8 * (int(mv[3]) - 1)
             promo = PROMO[mv[4]] if len(mv) > 4 else 0
-            # DeepNoc win_prob is mover-POV -> white-POV wdl
-            pw = wp if side == 0 else 1.0 - wp
-            wdl = (min(max(pw, 0.0), 1.0), 0.0, 0.0)
+            # DeepNoc win_prob is mover-POV -> white-POV wdl. Only an
+            # expected score is available, so split the residual mass over
+            # draw/loss evenly — a proper (w,d,l) triple that sums to 1.
+            # The old (pw, 0, 0) collapsed the value head to always-win
+            # (CE -> 0 signature) and poisoned trunk features (2026-10-25).
+            pw = min(max(wp if side == 0 else 1.0 - wp, 0.0), 1.0)
+            rest = (1.0 - pw) * 0.5
+            wdl = (pw, rest, rest)
             rec = np.zeros(1, dtype=REC_DTYPE)
             rec[0]["side"] = side
             rec[0]["castling"] = rights
