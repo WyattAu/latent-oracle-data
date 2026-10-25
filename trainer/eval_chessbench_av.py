@@ -38,9 +38,11 @@ def main():
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--puzzles", default="/home/wyatt/data/chessbench/puzzles.csv")
     ap.add_argument("--num-puzzles", type=int, default=2000)
+    ap.add_argument("--v3", action="store_true",
+                    help="trunk is v3 (GAB/castle/ep); default v1")
     args = ap.parse_args()
 
-    trunk = ChessNet(v3=True).to("cuda")
+    trunk = ChessNet(v3=args.v3).to("cuda")
     ck = torch.load(args.ckpt, map_location="cuda", weights_only=True)
     style = ck.get("style", "pooled")
     head = AVHead(trunk.blocks[-1].Wq.out_features, NUM_BINS,

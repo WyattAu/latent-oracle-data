@@ -248,6 +248,8 @@ def main():
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--wd", type=float, default=0.01)
     ap.add_argument("--no-mask-auto", action="store_true")
+    ap.add_argument("--fp32", action="store_true",
+                    help="disable fp16 autocast (nan-safe)")
     ap.add_argument("--quality-filter", action="store_true",
                     help="Skip records where played move loses >300cp vs SF best")
     ap.add_argument("--decisive-weighting", action="store_true",
@@ -449,7 +451,7 @@ def main():
                 mask = mask[:, MIRROR_IDX.to(mask.device), :][:, :, MIRROR_IDX.to(mask.device)]
                 u, v = tgt // 64, tgt % 64
                 tgt = MIRROR_IDX.to(tgt.device)[u] * 64 + MIRROR_IDX.to(tgt.device)[v]
-            with torch.autocast("cuda", dtype=torch.float16, enabled=device == "cuda"):
+            with torch.autocast("cuda", dtype=torch.float16, enabled=device == "cuda" and not args.fp32):
                 if args.recycle > 1:
                     passes = model.forward_recycle(codes, side, R=args.recycle, **state_kw)
                     scores, promo, wdl = passes[-1]
@@ -512,6 +514,15 @@ def main():
                     soft_t = torch.where(tb["exact"].unsqueeze(1), tb["vt"], soft_t)
                 vl = F.cross_entropy(wdl.float(), soft_t)
                 loss = pl + 0.5 * vl + args.rct_lambda * rct
+            if not torch.isfinite(loss):
+                main.consec_bad = getattr(main, "consec_bad", 0) + 1
+                print(f"non-finite loss at step {step} (consecutive {main.consec_bad})", flush=True)
+                if main.consec_bad >= 50:
+                    print("FATAL: 50 consecutive non-finite losses", flush=True)
+                    return
+                opt.zero_grad(set_to_none=True)
+                continue
+            main.consec_bad = 0
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             scaler.step(opt)
