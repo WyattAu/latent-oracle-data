@@ -15,6 +15,11 @@ PER=$(( (TOTAL + NPART - 1) / NPART ))
 log() { echo "[$(date '+%m-%d %H:%M')] $*" >> "$LOG"; }
 
 [ -f "$FINAL" ] && { log "final shard exists; supervisor done"; exit 0; }
+# Kill orphaned workers from previous generations (they truncate the same
+# part files and nothing ever completes). pkill excludes itself; the script
+# path does not contain the pattern.
+pkill -f "bc_to_shard_fast.py" 2>/dev/null || true
+sleep 1
 mkdir -p $PDIR
 
 P1_TODO=()
@@ -25,7 +30,7 @@ if [ ${#P1_TODO[@]} -gt 0 ]; then
   log "P1 resuming: ${P1_TODO[*]}"
   for p in "${P1_TODO[@]}"; do
     S=$((p * PER)); E=$((S + PER))
-    nice -n 10 $PY $TR/bc_to_shard_fast.py --bag $BAG --out $PDIR/part$p.shard --start $S --stop $E >> $LOG 2>&1 &
+    $PY $TR/bc_to_shard_fast.py --bag $BAG --out $PDIR/part$p.shard --start $S --stop $E >> $LOG 2>&1 &
   done
   wait
   log "P1 tick complete"
