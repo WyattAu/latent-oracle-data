@@ -18,7 +18,8 @@ log() { echo "[$(date '+%m-%d %H:%M')] $*" >> "$LOG"; }
 # Kill orphaned workers from previous generations (they truncate the same
 # part files and nothing ever completes). pkill excludes itself; the script
 # path does not contain the pattern.
-pkill -f "bc_to_shard_fast.py" 2>/dev/null || true
+pkill -f "bc_to_shard_block.py" 2>/dev/null || true
+  pkill -f "bc_to_shard_fast.py" 2>/dev/null || true
 sleep 1
 mkdir -p $PDIR
 
@@ -30,7 +31,7 @@ if [ ${#P1_TODO[@]} -gt 0 ]; then
   log "P1 resuming: ${P1_TODO[*]}"
   for p in "${P1_TODO[@]}"; do
     S=$((p * PER)); E=$((S + PER))
-    $PY $TR/bc_to_shard_fast.py --bag $BAG --out $PDIR/part$p.shard --start $S --stop $E >> $LOG 2>&1 &
+    $PY $TR/bc_to_shard_block.py --bag $BAG --out $PDIR/part$p.shard --start $S --stop $E >> $LOG 2>&1 &
   done
   wait
   log "P1 tick complete"
@@ -91,11 +92,14 @@ for p in range(NPART):
         if rec[REC_DTYPE.fields["n_targets"][1]] == 1:
             final.write(bytes(rec)); kept += 1
             ent = b"".join(struct.pack("<H", x) for x in flat)
-            pay.append(struct.pack("<B", len(flat))); pay.append(ent)
+            pay.write(struct.pack("<B", len(flat))); pay.write(ent)
         else:
             final.write(bytes(rec))
-            pay.append(struct.pack("<B", 0))
-        offs.write(struct.pack("<Q", pos)); pos += 1 + 2 * len(flat)
+            pay.write(struct.pack("<B", 0))
+            pos += 1
+        offs.write(struct.pack("<Q", pos))
+        if rec[REC_DTYPE.fields["n_targets"][1]] == 1:
+            pos += 2 * len(flat)
         total += 1
     offs.write(struct.pack("<Q", pos))
     rf.close(); sc.close()
