@@ -323,6 +323,10 @@ def main():
     ap.add_argument("--mirror", action="store_true",
                     help="File-mirror augmentation (a<->h), prob 0.5 per batch: the only "
                          "legal chess symmetry without a color swap. Free 2x data.")
+    ap.add_argument("--rank-mirror", action="store_true",
+                    help="Rank+color mirror augmentation, prob 0.5 per batch: the true "
+                         "chess Z2 symmetry (side swaps, ep/castling remap, wdl swap). "
+                         "Free 2x data + enforces v(b)=1-v(mirror(b)).")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -451,6 +455,19 @@ def main():
                 mask = mask[:, MIRROR_IDX.to(mask.device), :][:, :, MIRROR_IDX.to(mask.device)]
                 u, v = tgt // 64, tgt % 64
                 tgt = MIRROR_IDX.to(tgt.device)[u] * 64 + MIRROR_IDX.to(tgt.device)[v]
+            if args.rank_mirror and torch.rand(1).item() < 0.5:
+                # rank+color mirror: sq -> sq^56, color swap (1-6 <-> 9-14),
+                # side flip, wdl triple reversed (white-POV swap), eval flip.
+                mir = torch.arange(64, device=codes.device) ^ 56
+                cs = codes.view(-1, 64)[:, mir]
+                code_swapped = torch.where((cs >= 1) & (cs <= 14), cs ^ 8, cs)
+                codes = code_swapped
+                side = 1 - side
+                mask = mask[:, mir, :][:, :, mir]
+                u, v = tgt // 64, tgt % 64
+                tgt = (u ^ 56) * 64 + (v ^ 56)
+                res_t = res_t[:, [2, 1, 0]]
+                if evals.numel(): evals = -evals
             with torch.autocast("cuda", dtype=torch.float16, enabled=device == "cuda" and not args.fp32):
                 if args.recycle > 1:
                     passes = model.forward_recycle(codes, side, R=args.recycle, **state_kw)
