@@ -15,9 +15,6 @@ from eval_chessbench_av import fen_to_inputs
 style = "pooled"
 import sys as _sys
 DEV = "cuda"
-for _a in _sys.argv:
-    if _a.startswith("--device="):
-        DEV = _a.split("=", 1)[1]
 
 
 def best_move(fen):
@@ -29,9 +26,9 @@ def best_move(fen):
         return legal[0]
     codes, side, cast, ep_feat, _ = fen_to_inputs(fen)
     codes_t = torch.from_numpy(codes.astype(np.int64)).to(DEV).unsqueeze(0)
-    side_t = torch.tensor([side], dtype=torch.long, device="cuda")
-    cast_t = torch.tensor([cast], dtype=torch.long, device="cuda")
-    ep_t = torch.tensor([ep_feat], dtype=torch.long, device="cuda")
+    side_t = torch.tensor([side], dtype=torch.long, device=DEV)
+    cast_t = torch.tensor([cast], dtype=torch.long, device=DEV)
+    ep_t = torch.tensor([ep_feat], dtype=torch.long, device=DEV)
     feats = {}
     handle = trunk.blocks[-1].register_forward_hook(
         lambda m, i, o: feats.__setitem__("h", o))
@@ -44,9 +41,9 @@ def best_move(fen):
             promo = {None: 0, chess.KNIGHT: 1, chess.BISHOP: 2,
                      chess.ROOK: 3, chess.QUEEN: 4}.get(mv.promotion, 0)
             cand.append((mv, mv.from_square, mv.to_square, promo))
-        from_t = torch.tensor([c[1] for c in cand], device="cuda")
-        to_t = torch.tensor([c[2] for c in cand], device="cuda")
-        pr_t = torch.tensor([c[3] for c in cand], device="cuda")
+        from_t = torch.tensor([c[1] for c in cand], device=DEV)
+        to_t = torch.tensor([c[2] for c in cand], device=DEV)
+        pr_t = torch.tensor([c[3] for c in cand], device=DEV)
         state_b = state.expand(len(cand), -1, -1) if style == "xattn" \
             else state.expand(len(cand), -1)
         logits = head(state_b, from_t, to_t, pr_t)
@@ -58,13 +55,20 @@ def best_move(fen):
 
 def main():
     global trunk, head, style
-    ckpt = sys.argv[1]
-    trunk = ChessNet(v3=True).to(DEV)
-    ck = torch.load(ckpt, map_location="cuda", weights_only=True)
+    ckpt = None
+    for _a in _sys.argv[1:]:
+        if _a.startswith("--device="):
+            globals()["DEV"] = _a.split("=", 1)[1]
+        elif ckpt is None:
+            ckpt = _a
+    ckpt = ckpt or "/home/wyatt/data/runs/bc_avlabels40m/net_e0_ema.pt"
+    trunk = ChessNet(v3=False).to(DEV)
+    ck = torch.load(ckpt, map_location=DEV, weights_only=True)
     style = ck.get("style", "pooled")
     head = AVHead(trunk.blocks[-1].Wq.out_features, NUM_BINS,
                   style=style).to(DEV)
-    trunk.load_state_dict(ck["trunk"])
+    sd = ck["trunk"] if "trunk" in ck else ck
+    trunk.load_state_dict(sd)
     head.load_state_dict(ck["head"])
     style = ck.get("style", "pooled")
     trunk.eval(); head.eval()
