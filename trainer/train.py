@@ -15,6 +15,8 @@ import math
 import os
 import sys
 
+import random
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -323,6 +325,13 @@ def main():
     ap.add_argument("--mirror", action="store_true",
                     help="File-mirror augmentation (a<->h), prob 0.5 per batch: the only "
                          "legal chess symmetry without a color swap. Free 2x data.")
+    ap.add_argument("--distill1ply", type=int, default=0,
+                    help="positions per step for one-ply value distillation "
+                         "(0=off): enumerates legal afterstates, evaluates them "
+                         "with the same net, and pulls v(s) toward max_a(1-v_opp) "
+                         "— distills one-ply search into the value head.")
+    ap.add_argument("--distill-weight", type=float, default=0.1,
+                    help="loss weight for the one-ply distillation term")
     ap.add_argument("--rank-mirror", action="store_true",
                     help="Rank+color mirror augmentation, prob 0.5 per batch: the true "
                          "chess Z2 symmetry (side swaps, ep/castling remap, wdl swap). "
@@ -530,7 +539,62 @@ def main():
                     # exact Syzygy value targets override everything else
                     soft_t = torch.where(tb["exact"].unsqueeze(1), tb["vt"], soft_t)
                 vl = F.cross_entropy(wdl.float(), soft_t)
+                distill_loss = scores.new_zeros(())
                 loss = pl + 0.5 * vl + args.rct_lambda * rct
+                if args.distill1ply:
+                    # Loop B: one-ply value distillation (RESEARCH-CROSSFIELD §2)
+                    sel = random.sample(range(codes.shape[0]),
+                                        min(args.distill1ply, codes.shape[0]))
+                    aft_codes, aft_sides, owner = [], [], []
+                    mir = torch.arange(64, device=codes.device) ^ 56
+                    for b_i in sel:
+                        legal = (mask[b_i].reshape(-1) != 0).nonzero().flatten()
+                        if legal.numel() == 0:
+                            continue
+                        frs, tos = legal // 64, legal % 64
+                        bd = codes[b_i]
+                        piece = bd[frs]
+                        empty = torch.zeros_like(piece)
+                        mover_white = (side[b_i].item() == 0)
+                        pawn = piece == (1 if mover_white else 9)
+                        to_occ = bd[tos] != 0
+                        keep = ~(pawn & (~to_occ) & ((frs % 8) != (tos % 8)))
+                        frs, tos, piece, empty = frs[keep], tos[keep], piece[keep], empty[keep]
+                        if frs.numel() == 0:
+                            continue
+                        aft = bd.clone()
+                        aft[tos] = piece
+                        aft[frs] = empty
+                        is_castle = ((piece == (6 if mover_white else 14))
+                                     & ((frs % 8 - tos % 8).abs() == 2))
+                        for ci in is_castle.nonzero().flatten().tolist():
+                            fr_, to_ = int(frs[ci]), int(tos[ci])
+                            rk_white = mover_white
+                            r_from = (7 if to_ % 8 == 6 else 0) + (0 if rk_white else 56)
+                            r_to = (5 if to_ % 8 == 6 else 3) + (0 if rk_white else 56)
+                            aft[r_to] = 4 + (0 if rk_white else 8)
+                            aft[r_from] = 0
+                        aft_codes.append(aft)
+                        aft_sides.append(torch.tensor([1 - side[b_i].item()],
+                                                      dtype=torch.long, device=codes.device))
+                        owner.append(torch.tensor([b_i], dtype=torch.long,
+                                                  device=codes.device))
+                    if aft_codes:
+                        ac = torch.cat(aft_codes).view(-1, 64)
+                        asd = torch.cat(aft_sides).view(-1)
+                        owner = torch.cat(owner).view(-1)
+                        _, _, w_opp = model(ac, asd, **state_kw)
+                        p_opp = torch.softmax(w_opp.float(), dim=1)
+                        v_opp = p_opp[:, 0] + 0.5 * p_opp[:, 1]
+                        m_target = torch.zeros(codes.shape[0], device=codes.device)
+                        m_target = m_target.scatter_reduce(0, owner, 1.0 - v_opp,
+                                                           reduce="amax", include_self=False)
+                        wl_all = torch.softmax(wdl.float(), dim=1)
+                        v_all = wl_all[:, 0] + 0.5 * wl_all[:, 1]
+                        sel_t = torch.tensor(sel, device=codes.device)
+                        distill_loss = args.distill_weight * F.mse_loss(
+                            v_all[sel_t], m_target[sel_t].detach())
+                        loss = loss + distill_loss + distill_loss
             if not torch.isfinite(loss):
                 main.consec_bad = getattr(main, "consec_bad", 0) + 1
                 print(f"non-finite loss at step {step} (consecutive {main.consec_bad})", flush=True)
