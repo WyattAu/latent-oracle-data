@@ -53,6 +53,10 @@ def load_artifact(path: str, *, heal: bool = True, weights_only: bool = False):
     if the retry also fails, so real problems are not masked.
     """
     try:
+        import os as _os
+        if not _os.environ.get("CUDA_VISIBLE_DEVICES"):
+            import torch as _t
+            return _t.load(path, weights_only=weights_only, map_location="cpu")
         return torch.load(path, weights_only=weights_only)
     except Exception as exc:  # noqa: BLE001 - re-raised unless truncation
         if not heal or not os.path.exists(path) or not _is_truncation(exc):
