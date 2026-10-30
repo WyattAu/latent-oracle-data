@@ -13,6 +13,11 @@ from eval_chessbench_av import fen_to_inputs
 
 
 style = "pooled"
+import sys as _sys
+DEV = "cuda"
+for _a in _sys.argv:
+    if _a.startswith("--device="):
+        DEV = _a.split("=", 1)[1]
 
 
 def best_move(fen):
@@ -23,7 +28,7 @@ def best_move(fen):
     if len(legal) == 1:
         return legal[0]
     codes, side, cast, ep_feat, _ = fen_to_inputs(fen)
-    codes_t = torch.from_numpy(codes.astype(np.int64)).to("cuda").unsqueeze(0)
+    codes_t = torch.from_numpy(codes.astype(np.int64)).to(DEV).unsqueeze(0)
     side_t = torch.tensor([side], dtype=torch.long, device="cuda")
     cast_t = torch.tensor([cast], dtype=torch.long, device="cuda")
     ep_t = torch.tensor([ep_feat], dtype=torch.long, device="cuda")
@@ -54,11 +59,11 @@ def best_move(fen):
 def main():
     global trunk, head, style
     ckpt = sys.argv[1]
-    trunk = ChessNet(v3=True).to("cuda")
+    trunk = ChessNet(v3=True).to(DEV)
     ck = torch.load(ckpt, map_location="cuda", weights_only=True)
     style = ck.get("style", "pooled")
     head = AVHead(trunk.blocks[-1].Wq.out_features, NUM_BINS,
-                  style=style).to("cuda")
+                  style=style).to(DEV)
     trunk.load_state_dict(ck["trunk"])
     head.load_state_dict(ck["head"])
     style = ck.get("style", "pooled")
