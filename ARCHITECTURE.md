@@ -1,4 +1,4 @@
-# Architecture — latent-oracle-data
+# Architecture: latent-oracle-data
 
 Data pipeline + research tooling for the latent-oracle searchless chess
 engine. See the engine repo's ARCHITECTURE.md for the inference side and
@@ -19,13 +19,13 @@ src/            Rust pipeline (lo-data binary)
 
 trainer/        Python research tooling (flat modules by design; see
                 pyproject.toml note before restructuring)
-  model.py        ChessNet — the architecture contract (bit-mirrored by the
+  model.py        ChessNet; the architecture contract (bit-mirrored by the
                   engine's C++ inference; do not change one side alone)
   train.py        BC/AV/distillation trainer (mask sidecars, TB sidecars,
                   RCT, QAT, EMA, mirror aug, decisive weighting, Muon, WSD)
   muon.py         Muon optimizer (orthogonalized momentum)
   export_int8.py  LOQW INT8 blob exporter (calibration + v2 GAB + v3 tail)
-  loqw_sim.py     quantized forward simulation — parity reference (ADR-005)
+  loqw_sim.py     quantized forward simulation; parity reference (ADR-005)
   train_diffusion.py / infer_diffusion.py   DiffuSearch pilot (E: future-token
                   discrete diffusion; samples built from shard pairs)
   amz_pilot.py    amortized-minimax targets (RESEARCH-NOVEL2 N5)
@@ -45,12 +45,12 @@ tests_ci/       CI gate: format round-trip, GAB identity, recycle grads,
 
 ## Contracts
 
-- **Shard v1**: 64-byte records, "LOSH" LE header — trainer/format.py and
+- **Shard v1**: 64-byte records, "LOSH" LE header; trainer/format.py and
   shard.rs must agree bit-for-bit.
-- **LOQW blob**: quantized net layout — export_int8.py (writer), netq.cpp
+- **LOQW blob**: quantized net layout; export_int8.py (writer), netq.cpp
   (reader), loqw_sim.py (parity reference). Single source of truth: the
   blob itself.
-- **LONW blob**: fp32 net layout — model.py export_blob (writer), net.cpp
+- **LONW blob**: fp32 net layout; model.py export_blob (writer), net.cpp
   (reader); v1 ⊂ v2(GAB) ⊂ v3(tail) strict-prefix versions.
 - **Parity**: any inference change ships with a harness run (ADR-005).
 

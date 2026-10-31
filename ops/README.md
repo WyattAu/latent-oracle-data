@@ -1,4 +1,4 @@
-# ops — autonomous experiment cascade
+# ops: autonomous experiment cascade
 
 These are the orchestration scripts that drive the research chains. They were
 previously unversioned (they lived only in `/home/wyatt/data`), which meant a
@@ -46,6 +46,6 @@ moonshot_queue.sh   GPU: DiffuSearch h=2 → a0-match gate → AMZ pilot →
 ## Editing rules
 
 - NEVER edit a script that is currently executing (bash re-reads by byte
-  offset). Kill it, edit, relaunch — that is how the keep-best Elo fix landed.
+  offset). Kill it, edit, relaunch; that is how the keep-best Elo fix landed.
 - `sed`-edit live scripts only when the phase has not started and the script is
   blocked in a `while ... sleep` loop, and even then prefer kill/edit/relaunch.

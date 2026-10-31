@@ -53,5 +53,5 @@ Rust 1.75+.
 ## License
 
 GPL-3.0-or-later (the chess-rules dependency `shakmaty` is GPL-3; this tool
-never links into the Apache-2.0 engine — the license boundary and data-flow
+never links into the Apache-2.0 engine; the license boundary and data-flow
  rationale are documented in [PROVENANCE](PROVENANCE.md)).

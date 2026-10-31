@@ -10,7 +10,7 @@ obligations from the tools that produced them.
 
 | Crate | License | Role |
 |-------|---------|------|
-| shakmaty | GPL-3.0-or-later | chess rules, SAN parsing, PGN replay (this makes the *tool* GPL; the engine repo is unaffected — no code or linking crosses the boundary) |
+| shakmaty | GPL-3.0-or-later | chess rules, SAN parsing, PGN replay (this makes the *tool* GPL; the engine repo is unaffected; no code or linking crosses the boundary) |
 | zstd | MIT/Apache-2.0 | streaming decompression of Lichess `.pgn.zst` |
 
 No GPL code is read, copied, or linked. Stockfish is executed as an external
