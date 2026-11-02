@@ -140,7 +140,7 @@ def main():
     args = ap.parse_args()
 
     torch.manual_seed(7)
-    trunk = ChessNet(v3=True).to("cuda")
+    trunk = ChessNet(v3=False).to("cuda")
     if args.init_from:
         sd = torch.load(args.init_from, map_location="cuda", weights_only=True)
         if "trunk" in sd:  # this script's checkpoints nest trunk+head
