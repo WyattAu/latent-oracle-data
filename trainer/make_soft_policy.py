@@ -10,7 +10,7 @@ they don't.
 Output: jsonl {fen_idx, soft: [[uci, p], ...], best_uci} per position.
 The trainer reads these as CE targets (distribution over legal moves).
 """
-import argparse, subprocess, json, sys, random
+import argparse, subprocess, json, sys, random, math
 import numpy as np, chess
 sys.path.insert(0, "/home/wyatt/dev/src/github.com/WyattAu/latent-oracle-data/trainer")
 from format import REC_DTYPE
@@ -74,27 +74,40 @@ def main():
 
         sf.stdin.write(f"position fen {b.fen()}\ngo nodes {args.nodes}\n")
         sf.stdin.flush()
-        multipv = []
+        # SF emits one info line per multipv index per depth: keep the LAST
+        # (deepest) line per index, else intermediate depths pollute the mix.
+        multipv = {}
         for line in sf.stdout:
             if line.startswith("bestmove"): break
-            if " multipv " in line and " score cp " in line:
-                try:
-                    pv_idx = int(line.split(" multipv ")[1].split()[0])
+            if " multipv " not in line:
+                continue
+            try:
+                pv_idx = int(line.split(" multipv ")[1].split()[0])
+                if " score cp " in line:
                     cp = int(line.split(" score cp ")[1].split()[0])
-                    pv = line.split(" pv ")[1].split()[0] if " pv " in line else None
-                    multipv.append((pv_idx, cp, pv))
-                except (ValueError, IndexError):
+                elif " score mate " in line:
+                    m = int(line.split(" score mate ")[1].split()[0])
+                    cp = 10000 if m > 0 else -10000
+                else:
                     continue
+                parts = line.split(" pv ")
+                pv = parts[1].split()[0] if len(parts) > 1 else None
+                if pv:
+                    multipv[pv_idx] = (cp, pv)
+            except (ValueError, IndexError):
+                continue
         if not multipv: continue
-        multipv.sort()
-        best_cp = multipv[0][1]
-        soft = []
-        for _, cp, pv in multipv:
-            if pv:
-                w = __import__("math").exp(-(cp - best_cp) / args.temperature)
-                soft.append((pv, w))
-        z = sum(w for _, w in soft) or 1.0
-        soft = [(mv, round(w / z, 5)) for mv, w in soft]
+        ordered = [multipv[k] for k in sorted(multipv)]
+        best_cp = ordered[0][0]
+        # dedup moves (keep the max weight per move), then softmax-normalize
+        weights = {}
+        for cp, mv in ordered:
+            w = math.exp(-(cp - best_cp) / args.temperature)
+            if mv not in weights or w > weights[mv]:
+                weights[mv] = w
+        z = sum(weights.values()) or 1.0
+        soft = sorted(((mv, round(w / z, 5)) for mv, w in weights.items()),
+                      key=lambda x: -x[1])
         rec_out = {"shard_idx": i, "fen": b.fen(), "soft": soft,
                    "best": soft[0][0] if soft else None}
         out_f.write(json.dumps(rec_out) + "\n")

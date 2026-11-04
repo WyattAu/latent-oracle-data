@@ -72,7 +72,8 @@ def encode_batch(samples, device, state_aware: bool = False):
 def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: MaskSidecar | None = None,
                 state_aware: bool = False, volatility_weight: float = 1.0,
                 volatility_threshold: int = 150,
-                quality_filter: bool = False, tb_labels: dict | None = None):
+                quality_filter: bool = False, tb_labels: dict | None = None,
+                soft_labels: dict | None = None):
     """Pull one batch worth of samples with their masks.
 
     With a MaskSidecar the mask comes from precomputed legal-move indices
@@ -82,7 +83,7 @@ def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: Mask
     target becomes the DTZ-optimal move and the value target the exact WDL,
     both at full policy weight (RESEARCH-ENDGAME-RL E1)."""
     samples, masks, tidx, evals, labeled = [], [], [], [], []
-    pol_w, tb_exact, tb_vt, fmoves = [], [], [], []
+    pol_w, tb_exact, tb_vt, fmoves, ssoft = [], [], [], [], []
     while len(samples) < batch:
         item = next(stream, None)
         if item is None:
@@ -95,6 +96,7 @@ def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: Mask
         if quality_filter and len(s.targets) >= 2 and abs(s.eval_cp) > 300:
             continue
         is_tb = tb_labels is not None and idx_s in tb_labels
+        s_ent = (soft_labels.get(idx_s) if soft_labels is not None else None) or None
         if is_tb:
             wdl, best_flat = tb_labels[idx_s]
             if wdl == 2:   vt = (1.0, 0.0, 0.0)
@@ -118,6 +120,12 @@ def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: Mask
                 continue  # target not legal: corrupt record
             if is_tb and mask.reshape(-1)[best_flat]:
                 tflat = best_flat  # DTZ-optimal policy target
+            if s_ent:
+                s_ent = [(mv, p) for mv, p in s_ent if mask.reshape(-1)[mv]]
+                if s_ent:
+                    tflat = max(s_ent, key=lambda x: x[1])[0]  # soft argmax
+                else:
+                    s_ent = None
         else:
             board = codes_to_board(s.board_codes, s.side)
             if board.is_game_over():
@@ -127,6 +135,12 @@ def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: Mask
                 continue
             if is_tb and mask.reshape(-1)[best_flat]:
                 tflat = best_flat
+            if s_ent:
+                s_ent = [(mv, p) for mv, p in s_ent if mask.reshape(-1)[mv]]
+                if s_ent:
+                    tflat = max(s_ent, key=lambda x: x[1])[0]  # soft argmax
+                else:
+                    s_ent = None
 
         samples.append(s)
         masks.append(mask)
@@ -137,6 +151,7 @@ def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: Mask
         tb_exact.append(is_tb)
         tb_vt.append(vt if vt is not None else (0.0, 0.0, 0.0))
         fmoves.append(float(s.fullmove))
+        ssoft.append(s_ent)
     encoded = encode_batch(samples, device, state_aware=state_aware)
     codes, side = encoded[0], encoded[1]
     state_kw = {}
@@ -169,10 +184,19 @@ def build_batch(stream, batch: int, device, require_targets: bool, mask_sc: Mask
     # order must match the unpacking at the call site
     volat_t = (torch.tensor(volat, dtype=torch.float32, device=device)
                if volat is not None else torch.zeros(0, device=device))
+    soft_t = None
+    if soft_labels is not None and any(ssoft):
+        B = len(samples)
+        soft_t = torch.zeros(B, 64 * 64, device=device)
+        for r, ent in enumerate(ssoft):
+            if ent:
+                mi = torch.tensor([m for m, _ in ent], dtype=torch.long, device=device)
+                mp = torch.tensor([p for _, p in ent], dtype=torch.float32, device=device)
+                soft_t[r].scatter_(0, mi, mp)
     return codes, side, mask_t, tgt, \
         torch.tensor(evals, dtype=torch.float32, device=device), \
         torch.tensor(labeled, dtype=torch.bool, device=device), \
-        state_kw, volat_t, res_t, tb
+        state_kw, volat_t, res_t, tb, soft_t
 
 
 def ensure_mask(args) -> MaskSidecar | None:
@@ -317,6 +341,10 @@ def main():
                     help="JSONL from make_tb_labels.py: exact Syzygy WDL/DTZ labels for "
                          "<=5-piece records. TB records get exact value targets, "
                          "DTZ-optimal policy targets, full policy weight (E1).")
+    ap.add_argument("--soft-labels", default="",
+                    help="JSONL from make_soft_policy.py: SF multipv soft policy "
+                         "targets {shard_idx, soft:[[uci,p]...]}. Covered rows get "
+                         "CE against the soft distribution; others keep hard one-hot.")
     ap.add_argument("--qat", action="store_true",
                     help="projection QAT (quantized-projected SGD): after each step, "
                          "project the quantized-linears' weights onto the s8 grid "
@@ -405,6 +433,21 @@ def main():
                 to_sq = tr * 8 + tf
                 tb_labels[r["idx"]] = (int(r["wdl"]), from_sq * 64 + to_sq)
         print(f"tb sidecar: {len(tb_labels)} exact endgame labels", flush=True)
+    soft_labels = None
+    if args.soft_labels and os.path.exists(args.soft_labels):
+        import json
+        import chess
+        soft_labels = {}
+        with open(args.soft_labels) as f:
+            for line in f:
+                r = json.loads(line)
+                ent = []
+                for uci, p in r["soft"]:
+                    mv = chess.Move.from_uci(uci)
+                    ent.append((mv.from_square * 64 + mv.to_square, float(p)))
+                if ent:
+                    soft_labels[int(r["shard_idx"])] = ent
+        print(f"soft labels: {len(soft_labels)} rows from {args.soft_labels}", flush=True)
     match_ema = None
     if sched_kind != "const":
         steps_per_epoch = max(1, total // args.batch)
@@ -446,7 +489,8 @@ def main():
                            mask_sc=mask_sc, quality_filter=args.quality_filter,
                            tb_labels=tb_labels, state_aware=args.state_aware,
                            volatility_weight=args.volatility_weight,
-                           volatility_threshold=args.volatility_threshold)
+                           volatility_threshold=args.volatility_threshold,
+                           soft_labels=soft_labels)
 
     for epoch in range(args.epochs):
         stream = enumerate(iter_records(args.shard))
@@ -457,13 +501,16 @@ def main():
             if batch is None:
                 break
             pending = pool.submit(_make_batch, stream) if pool is not None else None
-            codes, side, mask, tgt, evals, labeled, state_kw, volat, res_t, tb = batch
+            codes, side, mask, tgt, evals, labeled, state_kw, volat, res_t, tb, soft_t = batch
             if args.mirror and torch.rand(1).item() < 0.5:
                 from model import MIRROR_IDX
                 codes = codes.view(-1, 64)[:, MIRROR_IDX.to(codes.device)]
                 mask = mask[:, MIRROR_IDX.to(mask.device), :][:, :, MIRROR_IDX.to(mask.device)]
                 u, v = tgt // 64, tgt % 64
                 tgt = MIRROR_IDX.to(tgt.device)[u] * 64 + MIRROR_IDX.to(tgt.device)[v]
+                if soft_t is not None:
+                    soft_t = soft_t.view(-1, 64, 64)[:, MIRROR_IDX.to(soft_t.device), :] \
+                        [:, :, MIRROR_IDX.to(soft_t.device)].reshape(-1, 64 * 64)
             if args.rank_mirror and torch.rand(1).item() < 0.5:
                 # rank+color mirror: sq -> sq^56, color swap (1-6 <-> 9-14),
                 # side flip, wdl triple reversed (white-POV swap), eval flip.
@@ -477,6 +524,8 @@ def main():
                 tgt = (u ^ 56) * 64 + (v ^ 56)
                 res_t = res_t[:, [2, 1, 0]]
                 if evals.numel(): evals = -evals
+                if soft_t is not None:
+                    soft_t = soft_t.view(-1, 64, 64)[:, mir][:, :, mir].reshape(-1, 64 * 64)
             with torch.autocast("cuda", dtype=torch.float16, enabled=device == "cuda" and not args.fp32):
                 if args.recycle > 1:
                     passes = model.forward_recycle(codes, side, R=args.recycle, **state_kw)
@@ -497,6 +546,18 @@ def main():
                 flat = scores.reshape(codes.shape[0], 64 * 64)
                 flat = flat.masked_fill(~mask.reshape(codes.shape[0], -1), float("-inf"))
                 pl_raw = F.cross_entropy(flat, tgt, reduction="none")
+                if soft_t is not None:
+                    # Soft SF-policy rows: CE against the teacher's move
+                    # distribution; uncovered rows keep the hard one-hot.
+                    soft_t = soft_t * mask.reshape(codes.shape[0], -1).float()
+                    has_soft = soft_t.sum(1) > 0
+                    if has_soft.any():
+                        # mask logp to 0 on illegal entries: soft_t is 0 there,
+                        # and 0 * (-inf) is NaN, not 0 (IEEE)
+                        logp = F.log_softmax(flat, dim=1).masked_fill(
+                            ~mask.reshape(codes.shape[0], -1), 0.0)
+                        soft_ce = -(soft_t * logp).sum(1)
+                        pl_raw = torch.where(has_soft, soft_ce, pl_raw)
                 with torch.no_grad():
                     batch_match = (flat.argmax(1) == tgt).float().mean().item()
                 match_ema = batch_match if match_ema is None else 0.98 * match_ema + 0.02 * batch_match
