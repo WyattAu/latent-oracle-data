@@ -211,11 +211,22 @@ def ensure_mask(args) -> MaskSidecar | None:
     total = count_records(args.shard)
     if os.path.exists(mask_path) and os.path.getsize(mask_path) > 1000:
         sc = MaskSidecar(mask_path)
-        if sc.count >= total:
-            print(f"mask sidecar: {mask_path} ({sc.count} records)", flush=True)
-            return sc
+        # integrity: the offset table must end inside the file. A mask
+        # truncated mid-generation still carries a full-count header, so
+        # count alone is not proof (2026-11-04 compound38m crash loop).
+        base = 16 + (sc.count + 1) * 8
+        last_off = int(sc.offsets[-1])
         sc.close()
-        print(f"mask sidecar: {mask_path} only covers {sc.count}/{total} — regenerating", flush=True)
+        if last_off + base <= os.path.getsize(mask_path):
+            sc = MaskSidecar(mask_path)
+            if sc.count >= total:
+                print(f"mask sidecar: {mask_path} ({sc.count} records)", flush=True)
+                return sc
+            sc.close()
+            print(f"mask sidecar: {mask_path} only covers {sc.count}/{total} — regenerating", flush=True)
+        else:
+            print(f"mask sidecar: {mask_path} truncated (last offset {last_off}+{base} > "
+                  f"{os.path.getsize(mask_path)}) — regenerating", flush=True)
     bin_ = os.environ.get("LO_LODATA_BIN", "/home/wyatt/tools/chess/lo-data")
     if not os.path.exists(bin_):
         print("mask sidecar: lo-data binary not found — python-chess fallback", flush=True)
