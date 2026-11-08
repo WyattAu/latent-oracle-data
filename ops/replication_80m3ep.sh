@@ -13,16 +13,21 @@ LOG=$DATA/replication.log
 R=$DATA/runs/replication_80m3ep
 COMBINED=$DATA/shards/bc_v2_combined.shard
 log() { echo "[$(date '+%m-%d %H:%M')] $*" >> "$LOG"; }
+disk_free_gb() { df -BG --output=avail /home | tail -1 | tr -dc '0-9'; }
+wait_disk() { while [ "$(disk_free_gb)" -lt "${1:-30}" ]; do
+  log "disk wait: need ${1:-30}G, have $(disk_free_gb)G — sleeping 10 min"; sleep 600; done; }
 
+wait_disk 30
 mkdir -p $R
 if [ ! -f "$R/net_e2_ema.bin" ]; then
-  log "training: 80M x 3 epochs + distill (625,000 steps batch 384 fp32)"
+  log "training: 80M x 3 epochs + distill (625,000 steps batch 384 fp32), ckpt-every 5000 + resume"
   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True $PY \
     $DATA_REPO/trainer/train.py \
     --shard $COMBINED --out $R \
     --d 256 --layers 8 --heads 8 --dff 1024 --dpol 128 \
     --epochs 3 --batch 384 --lr 3e-4 --fp32 \
-    --distill1ply 16 --distill-weight 0.1 >> "$LOG" 2>&1 || { log "training FAILED"; exit 1; }
+    --distill1ply 16 --distill-weight 0.1 \
+    --ckpt-every 5000 --resume >> "$LOG" 2>&1 || { log "training FAILED"; exit 1; }
   log "training done"
 fi
 

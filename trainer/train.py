@@ -11,8 +11,10 @@ engine or the exported weights).
 from __future__ import annotations
 
 import argparse
+import glob
 import math
 import os
+import re
 import sys
 
 import random
@@ -356,6 +358,12 @@ def main():
                     help="JSONL from make_soft_policy.py: SF multipv soft policy "
                          "targets {shard_idx, soft:[[uci,p]...]}. Covered rows get "
                          "CE against the soft distribution; others keep hard one-hot.")
+    ap.add_argument("--ckpt-every", type=int, default=0,
+                    help="save a resumable checkpoint (model+opt+sched+scaler+ema+step) "
+                         "every N steps. 0 = off. Multi-day runs should set ~5000: "
+                         "any crash then loses at most N steps, not the whole run.")
+    ap.add_argument("--resume", action="store_true",
+                    help="resume from the newest ckpt_step*.pt in --out")
     ap.add_argument("--qat", action="store_true",
                     help="projection QAT (quantized-projected SGD): after each step, "
                          "project the quantized-linears' weights onto the s8 grid "
@@ -459,7 +467,29 @@ def main():
                 if ent:
                     soft_labels[int(r["shard_idx"])] = ent
         print(f"soft labels: {len(soft_labels)} rows from {args.soft_labels}", flush=True)
+    scheduler = None
     match_ema = None
+    start_epoch = 0
+    start_done = 0
+    if args.resume:
+        cands = sorted(glob.glob(os.path.join(args.out, "ckpt_step*.pt")),
+                       key=lambda p: int(re.search(r"ckpt_step(\d+)\.pt$", p).group(1)))
+        if cands:
+            ck = torch.load(cands[-1], map_location=device, weights_only=False)
+            model.load_state_dict(ck["model"])
+            opt.load_state_dict(ck["opt"])
+            if scheduler is not None and ck.get("scheduler") is not None:
+                scheduler.load_state_dict(ck["scheduler"])
+            scaler.load_state_dict(ck["scaler"])
+            if ema_params is not None and ck.get("ema_params") is not None:
+                ema_params = [t.to(device) for t in ck["ema_params"]]
+            match_ema = ck.get("match_ema")
+            start_epoch = ck["epoch"]
+            start_done = ck["done"]
+            print(f"resume: {os.path.basename(cands[-1])} -> epoch {start_epoch} "
+                  f"step {ck['step']} done {start_done}", flush=True)
+        else:
+            print("resume: no ckpt_step*.pt found — starting fresh", flush=True)
     if sched_kind != "const":
         steps_per_epoch = max(1, total // args.batch)
         total_steps = steps_per_epoch * args.epochs
@@ -503,8 +533,12 @@ def main():
                            volatility_threshold=args.volatility_threshold,
                            soft_labels=soft_labels)
 
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         stream = enumerate(iter_records(args.shard))
+        done = start_done if epoch == start_epoch else 0
+        if epoch == start_epoch and start_done:
+            stream = ((i, s) for i, s in stream if i >= start_done)
+            print(f"resume: skipping {start_done} records into epoch {epoch}", flush=True)
         done = 0
         pending = pool.submit(_make_batch, stream) if pool is not None else None
         while True:
@@ -699,6 +733,20 @@ def main():
                         w.copy_(torch.round(w / scale).clamp(-127, 127) * scale)
             step += 1
             done += int(tgt.numel())
+            if args.ckpt_every and step % args.ckpt_every == 0:
+                # resumable checkpoint: keep the two newest, prune older
+                ck_path = os.path.join(args.out, f"ckpt_step{step}.pt")
+                tmp = ck_path + ".tmp"
+                torch.save({"model": model.state_dict(), "opt": opt.state_dict(),
+                            "scheduler": scheduler.state_dict() if scheduler is not None else None,
+                            "scaler": scaler.state_dict(),
+                            "ema_params": [e.cpu() for e in ema_params] if ema_params is not None else None,
+                            "match_ema": match_ema, "epoch": epoch, "done": done, "step": step}, tmp)
+                os.replace(tmp, ck_path)
+                for old in sorted(glob.glob(os.path.join(args.out, "ckpt_step*.pt")),
+                                  key=lambda p: int(re.search(r"ckpt_step(\d+)\.pt$", p).group(1)))[:-2]:
+                    try: os.remove(old)
+                    except OSError: pass
             if step % 25 == 0:
                 print(f"epoch {epoch} step {step}: policy {pl.item():.4f} value {vl.item():.4f} "
                       f"match {match_ema:.3f}{' rct ' + format(rct.item(), '.4f') if args.recycle > 1 else ''} "
