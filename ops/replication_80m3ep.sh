@@ -14,10 +14,10 @@ R=$DATA/runs/replication_80m3ep
 COMBINED=$DATA/shards/bc_v2_combined.shard
 log() { echo "[$(date '+%m-%d %H:%M')] $*" >> "$LOG"; }
 disk_free_gb() { df -BG --output=avail /home | tail -1 | tr -dc '0-9'; }
-wait_disk() { while [ "$(disk_free_gb)" -lt "${1:-30}" ]; do
+wait_disk() { while [ "$(disk_free_gb)" -lt "${1:-15}" ]; do
   log "disk wait: need ${1:-30}G, have $(disk_free_gb)G — sleeping 10 min"; sleep 600; done; }
 
-wait_disk 30
+wait_disk 15
 mkdir -p $R
 if [ ! -f "$R/net_e2_ema.bin" ]; then
   log "training: 80M x 3 epochs + distill (625,000 steps batch 384 fp32), ckpt-every 5000 + resume"
