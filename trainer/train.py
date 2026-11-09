@@ -486,6 +486,8 @@ def main():
             match_ema = ck.get("match_ema")
             start_epoch = ck["epoch"]
             start_done = ck["done"]
+            step = ck["step"]  # keep the counter true: ckpt numbering and
+            # the prune stay monotonic across restarts
             print(f"resume: {os.path.basename(cands[-1])} -> epoch {start_epoch} "
                   f"step {ck['step']} done {start_done}", flush=True)
         else:
