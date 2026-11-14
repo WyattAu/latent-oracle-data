@@ -46,7 +46,7 @@ if [ ! -f "$V3" ]; then
        "$DATA/shards/big_2026-05/bc.shard" "$V3.tmp" << 'COMBINE_PY'
 import struct, sys
 HEADER, REC = 16, 64
-srcs, dst = sys.argv[1:4], sys.argv[3 + 1 - 1]
+srcs, dst = sys.argv[1:4], sys.argv[4]
 total = 0
 with open(dst, "wb") as out:
     out.write(open(srcs[0], "rb").read(HEADER))
