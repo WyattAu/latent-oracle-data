@@ -34,7 +34,7 @@ if [ ! -f "$R/net_e0_ema.bin" ]; then
     --shard $VSH --out $R \
     --init-from $BASE \
     --d 256 --layers 8 --heads 8 --dff 1024 --dpol 128 \
-    --epochs 1 --batch 384 --lr 1e-4 --fp32 \
+    --epochs 1 --batch 384 --lr 3e-4 --fp32 --freeze-policy --policy-weight 0 \
     --ckpt-every 5000 --resume >> "$LOG" 2>&1 || { log "fine-tune FAILED"; exit 1; }
   log "fine-tune done"
 fi

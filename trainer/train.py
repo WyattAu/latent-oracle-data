@@ -344,6 +344,13 @@ def main():
                          "the stop-grad final pass. 2x step cost at R=2.")
     ap.add_argument("--rct-lambda", type=float, default=0.5,
                     help="RCT consistency loss weight (used when --recycle > 1).")
+    ap.add_argument("--freeze-policy", action="store_true",
+                    help="value-only fine-tune: freeze the policy head "
+                         "(lnP/Wfrom/Wto/promo) and drop the policy loss term. "
+                         "Use with --init-from to retarget the value head "
+                         "without disturbing the champion's policy.")
+    ap.add_argument("--policy-weight", type=float, default=1.0,
+                    help="policy loss weight (0 disables the policy loss term)")
     ap.add_argument("--sched", choices=["const", "cosine", "wsd"], default="const",
                     help="LR schedule: const (legacy default), cosine->10%%, or WSD "
                          "(warmup-stable-decay: stable until 90%% then linear to 10%%).")
@@ -389,6 +396,21 @@ def main():
     torch.manual_seed(0)
     model = ChessNet(args.d, args.layers, args.heads, args.dff, args.dpol,
                      gab=args.gab or args.v3, v3=args.v3).to(device)
+    if args.freeze_policy:
+        # value-only fine-tune: ONLY the value head's readout (lnV/V1/V2)
+        # trains; the trunk and policy head stay at the checkpoint weights,
+        # so ladders measure the value-target change with zero drift.
+        trainable = ("lnV.", "V1.", "V2.")
+        frozen = 0
+        kept = 0
+        for pname, p in model.named_parameters():
+            if any(k in pname for k in trainable):
+                kept += p.numel()
+            else:
+                p.requires_grad_(False)
+                frozen += p.numel()
+        print(f"freeze-policy: value-head-only fine-tune — {kept} trainable, "
+              f"{frozen} frozen (policy-weight={args.policy_weight})", flush=True)
     if args.init_from and os.path.exists(args.init_from):
         sd = load_artifact(args.init_from, weights_only=True)
         missing = None
@@ -424,7 +446,8 @@ def main():
                 if self.a: self.a.step()
         opt = _JointOpt(adamw_opt, muon_opt)
     else:
-        opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=args.wd)
+        opt = torch.optim.AdamW((p for p in model.parameters() if p.requires_grad),
+                                lr=lr, weight_decay=args.wd)
     print(f"params: {sum(p.numel() for p in model.parameters())/1e6:.1f}M on {device} "
           f"optimizer={args.optimizer}{' gab' if args.gab else ''}", flush=True)
     total_steps = None  # set after shard count known (below)
@@ -648,7 +671,7 @@ def main():
                     soft_t = torch.where(tb["exact"].unsqueeze(1), tb["vt"], soft_t)
                 vl = F.cross_entropy(wdl.float(), soft_t)
                 distill_loss = scores.new_zeros(())
-                loss = pl + 0.5 * vl + args.rct_lambda * rct
+                loss = args.policy_weight * pl + 0.5 * vl + args.rct_lambda * rct
                 if args.distill1ply:
                     # Loop B: one-ply value distillation (RESEARCH-CROSSFIELD §2)
                     sel = random.sample(range(codes.shape[0]),
