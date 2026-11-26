@@ -375,7 +375,13 @@ def main():
                     help="projection QAT (quantized-projected SGD): after each step, "
                          "project the quantized-linears' weights onto the s8 grid "
                          "(per-tensor symmetric round-to-nearest). Removes most of the "
-                         "INT8 export drop without STE machinery.")
+                         "int8 export error by making the served weights training-native")
+    ap.add_argument("--qat-start-frac", type=float, default=0.0,
+                    help="late-start QAT: enable the projection only after this "
+                         "fraction of total steps (0.9 = plain training for 90%%, then "
+                         "the quantization-aware phase adapts the settled weights). "
+                         "0.0 = every-step projection (the naive form: destructive at "
+                         "1.25M steps, RESULTS.md 2026-11-26)")
     ap.add_argument("--mirror", action="store_true",
                     help="File-mirror augmentation (a<->h), prob 0.5 per batch: the only "
                          "legal chess symmetry without a color swap. Free 2x data.")
@@ -746,7 +752,9 @@ def main():
                     d = args.ema_decay
                     for e, p in zip(ema_params, model.parameters()):
                         e.mul_(d).add_(p.detach(), alpha=1.0 - d)
-            if args.qat:
+            qat_from = int(args.qat_start_frac *
+                           max(1, (total // max(1, args.batch)) * args.epochs))
+            if args.qat and step >= qat_from:
                 with torch.no_grad():
                     lins = [b.Wq for b in model.blocks] + [b.Wk for b in model.blocks] + \
                            [b.Wv for b in model.blocks] + [b.W1 for b in model.blocks] + \
